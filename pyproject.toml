@@ -1,0 +1,22 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+
+[project]
+name = "decoders"
+version = "0.0.3"
+authors = [
+  { name="Manuel de Prada Corral", email="manueldeprada@gmail.com" },
+]
+description = "Diverse and extensible generation decoding libraries for transformers."
+readme = "README.md"
+requires-python = ">=3.9"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
+]
+
+[project.urls]
+"Homepage" = "https://github.com/manueldeprada/decoders"
