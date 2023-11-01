@@ -46,24 +46,24 @@ def gumbel_with_maximum(phi, T, dim=-1):
     g_phi = phi + gumbel_like(phi)
     Z, argmax = g_phi.max(dim)
     g = _shift_gumbel_maximum(g_phi, T, dim, Z=Z)
-    CHECK_VALIDITY = True
-    if CHECK_VALIDITY:
-        g_inv = _shift_gumbel_maximum(g, Z, dim)
-        # Create a boolean mask where the condition fails
-        mask = ~(((g_phi - g_inv) < 1e-3) | (g_phi == g_inv))
-        # | torch.isinf(g_phi).all(dim).repeat_interleave(g_phi.shape[-1], dim).view(g_phi.shape))
-
-        # Get indices where the mask is True (i.e., the assertion fails)
-        fail_indices = torch.nonzero(mask, as_tuple=True)
-
-        # Print the failed indices and corresponding values
-        for ind in zip(*fail_indices):
-            print(f"Index: {ind}, g_phi value: {g_phi[ind]}, g_inv value: {g_inv[ind]}")
-
-        assert (((g_phi - g_inv) < 1e-3) | (g_phi == g_inv)).all()
-        # | torch.isinf(g_phi).all(dim).repeat_interleave(g_phi.shape[-1], dim).view(g_phi.shape)).all()
-        # if a row in g_phi is all -inf, set the corresponding row in g to -inf
-        # g[torch.isinf(g_phi).all(dim)] = float('-inf')
+    # CHECK_VALIDITY = True
+    # if CHECK_VALIDITY:
+    #     g_inv = _shift_gumbel_maximum(g, Z, dim)
+    #     # Create a boolean mask where the condition fails
+    #     mask = ~(((g_phi - g_inv) < 1e-3) | (g_phi == g_inv))
+    #     # | torch.isinf(g_phi).all(dim).repeat_interleave(g_phi.shape[-1], dim).view(g_phi.shape))
+    # 
+    #     # Get indices where the mask is True (i.e., the assertion fails)
+    #     fail_indices = torch.nonzero(mask, as_tuple=True)
+    # 
+    #     # Print the failed indices and corresponding values
+    #     for ind in zip(*fail_indices):
+    #         print(f"Index: {ind}, g_phi value: {g_phi[ind]}, g_inv value: {g_inv[ind]}")
+    # 
+    #     assert (((g_phi - g_inv) < 1e-3) | (g_phi == g_inv)).all()
+    #     # | torch.isinf(g_phi).all(dim).repeat_interleave(g_phi.shape[-1], dim).view(g_phi.shape)).all()
+    #     # if a row in g_phi is all -inf, set the corresponding row in g to -inf
+    #     # g[torch.isinf(g_phi).all(dim)] = float('-inf')
     if inf_rows_mask.any():
         g_new = torch.full_like(old_phi, -1e9)
         g_new[~inf_rows_mask] = g

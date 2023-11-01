@@ -430,6 +430,7 @@ class StochasticBeamSearchDecoder(GenerationStrategy):
             beam_scores = beam_outputs["next_beam_scores"]
             beam_next_tokens = beam_outputs["next_beam_tokens"]
             beam_idx = beam_outputs["next_beam_indices"]
+            beam_gumbels = beam_outputs["next_beam_gumbels"]
 
             input_ids = torch.cat([input_ids[beam_idx, :], beam_next_tokens.unsqueeze(-1)], dim=-1)
 
@@ -460,6 +461,7 @@ class StochasticBeamSearchDecoder(GenerationStrategy):
             eos_token_id=eos_token_id,
             max_length=stopping_criteria.max_length,
             beam_indices=beam_indices,
+            beam_gumbels=beam_gumbels,
         )
 
         if return_dict_in_generate:
@@ -477,6 +479,7 @@ class StochasticBeamSearchDecoder(GenerationStrategy):
                     decoder_attentions=decoder_attentions,
                     cross_attentions=cross_attentions,
                     decoder_hidden_states=decoder_hidden_states,
+                    beam_gumbels=sequence_outputs["beam_gumbels"],
                 )
             else:
                 return BeamSearchDecoderOnlyOutput(
@@ -486,6 +489,7 @@ class StochasticBeamSearchDecoder(GenerationStrategy):
                     beam_indices=sequence_outputs["beam_indices"],
                     attentions=decoder_attentions,
                     hidden_states=decoder_hidden_states,
+                    beam_gumbels=sequence_outputs["beam_gumbels"],
                 )
         else:
             return sequence_outputs["sequences"]

@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "decoders"
-version = "0.0.3"
+version = "0.0.5"
 authors = [
   { name="Manuel de Prada Corral", email="manueldeprada@gmail.com" },
 ]
@@ -18,5 +18,12 @@ classifiers = [
     "Operating System :: OS Independent",
 ]
 
+dependencies = [
+    'transformers>=4.31.0,<4.33.0',
+#   'A>=1,<2',
+#   'B>=2'
+]
+
 [project.urls]
 "Homepage" = "https://github.com/manueldeprada/decoders"
+
