@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "decoders"
-version = "0.0.9"
+version = "0.0.10"
 authors = [
   { name="Manuel de Prada Corral", email="manueldeprada@gmail.com" },
 ]
