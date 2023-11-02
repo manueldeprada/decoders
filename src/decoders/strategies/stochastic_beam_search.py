@@ -61,8 +61,7 @@ class SBSLogitProcessor(LogitsProcessor):
         past_scores = kwargs['past_scores']  # tuple: seq_len tensors of dim (batch_size * num_beams, vocab_size)
         beam_indices = kwargs['beam_indices']  # shape (batch_size * num_beams,)
 
-        # derive the sequence log-probability from the logits
-        seq_len = input_ids.shape[-1]
+        device = input_ids.device
 
         scores = beam_log_probs.view(-1, 1) + scores  # shape (batch_size * num_beams, vocab_size)
         scores = scores.clamp(min=-1e9)
@@ -74,7 +73,7 @@ class SBSLogitProcessor(LogitsProcessor):
         else:
             last_token_scores = past_scores[-1]  # shape (batch_size * num_beams, vocab_size)
             last_tokens = input_ids[:, -1]  # shape (batch_size * num_beams, )
-            last_beam_indices = torch.tensor(tuple(tup[-1] for tup in beam_indices))
+            last_beam_indices = torch.tensor(tuple(tup[-1] for tup in beam_indices), device=device)
             last_gumbels = last_token_scores[last_beam_indices, last_tokens]
         new_gumbels, _ = gumbel_with_maximum(scores, last_gumbels)  # shape (batch_size * num_beams, ) todo check this view
         return new_gumbels
