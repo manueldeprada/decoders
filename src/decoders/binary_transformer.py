@@ -1,8 +1,8 @@
+import warnings
 import numpy as np
 import torch
 from transformers import PreTrainedModel, PretrainedConfig
 from transformers.modeling_outputs import Seq2SeqLMOutput
-
 
 class BinaryCodeTransformerConfig(PretrainedConfig):
     """Configuration class with appropriate defaults for BinaryCodeTransformer."""
@@ -14,7 +14,6 @@ class BinaryCodeTransformerConfig(PretrainedConfig):
         self.max_new_tokens = max_new_tokens
         self.do_sample = True
         self.num_beams = 1
-        self.top_k = 0
 
 
 # Helper functions

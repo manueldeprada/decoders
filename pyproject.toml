@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "decoders"
-version = "0.0.5"
+version = "0.0.7"
 authors = [
   { name="Manuel de Prada Corral", email="manueldeprada@gmail.com" },
 ]
@@ -19,7 +19,7 @@ classifiers = [
 ]
 
 dependencies = [
-    'transformers>=4.31.0,<4.33.0',
+    'transformers==4.32.0',
 #   'A>=1,<2',
 #   'B>=2'
 ]
