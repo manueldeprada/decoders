@@ -52,7 +52,7 @@ See [here](https://gist.github.com/manueldeprada/839e2446cc4e72dd8eb558c1acbbe85
 
 The BinaryCodeTransformer is a custom transformer model that acts like a probabilistic binary sequence generator. Given a discrete probability distribution over all possible binary sequences of a given length, it generates a sequence of that length according to that distribution. It is useful to test HF compatible sample-without-replacement decoders, like the Stochastic Beam Search decoder.
 
-The code maps each of the 2^n possible binary sequences of length n to its positive integer decimal representation. Then, it uses that number as the index of the corresponding probability in the input distribution. Since we are interested in autorergressive generation, the model computes the conditional probabilities by summing over the possible continuations of the sequence.
+The code maps each of the 2^n possible binary sequences of length n to its positive integer decimal representation. Then, it uses that number as the index of the corresponding probability in the input distribution. Since we are interested in autoregressive generation, the model computes the conditional probabilities by summing over the possible continuations of the sequence.
 
 ### FakeTransformer
 

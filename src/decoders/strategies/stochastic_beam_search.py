@@ -67,8 +67,8 @@ class SBSLogitProcessor(LogitsProcessor):
         scores = beam_log_probs.view(-1, 1) + scores  # shape (batch_size * num_beams, vocab_size)
         scores = scores.clamp(min=-1e9)
 
-        if seq_len == 1:  # first token
-            last_gumbels = gumbel(size=[self.batch_size, seq_len]).squeeze(-1)  # shape (batch_size, )
+        if len(past_scores)==0:  # first token
+            last_gumbels = gumbel(size=(self.batch_size,))  # shape (batch_size, )
             # expand (batch_size, ) to (batch_size * num_beams, )
             last_gumbels = last_gumbels.repeat_interleave(self.num_beams, dim=0)
         else:
