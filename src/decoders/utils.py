@@ -50,6 +50,7 @@ from transformers.generation.logits_process import (
     TopKLogitsWarper,
     TopPLogitsWarper,
     TypicalLogitsWarper,
+    UnbatchedClassifierFreeGuidanceLogitsProcessor
 )
 from .strategies.assisted_decoder import AssistedDecoder
 from .strategies.beam_constrained_decoder import ConstrainedDecoder
@@ -68,7 +69,7 @@ from transformers import (
     StoppingCriteria,
     StoppingCriteriaList,
 )
-from transformers.deepspeed import is_deepspeed_zero3_enabled
+from transformers.integrations.deepspeed import is_deepspeed_zero3_enabled
 from transformers.models.auto import (
     MODEL_FOR_CAUSAL_IMAGE_MODELING_MAPPING,
     MODEL_FOR_CAUSAL_LM_MAPPING,
@@ -76,13 +77,16 @@ from transformers.models.auto import (
     MODEL_FOR_SPEECH_SEQ_2_SEQ_MAPPING,
     MODEL_FOR_VISION_2_SEQ_MAPPING,
 )
-from transformers.utils import ModelOutput, logging
+from transformers.utils import ModelOutput, logging, is_accelerate_available
 
 if TYPE_CHECKING:
     from transformers.modeling_utils import PreTrainedModel
     from transformers.generation.streamers import BaseStreamer
 
 logger = logging.get_logger(__name__)
+
+if is_accelerate_available():
+    from accelerate.hooks import AlignDevicesHook, add_hook_to_module
 
 
 GENERATION_METHOD_CLS = {
@@ -154,7 +158,7 @@ class GenerationMixin:
         inputs_kwarg = model_kwargs.pop(input_name, None)
         if inputs_kwarg is not None and inputs is not None:
             raise ValueError(
-                f"`inputs`: {inputs}` were passed alongside {input_name} which is not allowed."
+                f"`inputs`: {inputs}` were passed alongside {input_name} which is not allowed. "
                 f"Make sure to either pass {inputs} or {input_name}=..."
             )
         elif inputs_kwarg is not None:
@@ -190,12 +194,6 @@ class GenerationMixin:
         # 4. if `inputs` is still None, try to create `input_ids` from BOS token
         inputs = self._maybe_initialize_input_ids_for_generation(inputs, bos_token_id, model_kwargs)
         return inputs, input_name, model_kwargs
-
-    def adjust_logits_during_generation(self, logits: torch.FloatTensor, **kwargs) -> torch.FloatTensor:
-        """
-        Implement in subclasses of [`PreTrainedModel`] for custom behavior to adjust the logits in the generate method.
-        """
-        return logits
 
     def _maybe_initialize_input_ids_for_generation(
         self,
@@ -250,8 +248,11 @@ class GenerationMixin:
         encoder = self.get_encoder()
         # Compatibility with Accelerate big model inference: we need the encoder to outputs stuff on the same device
         # as the inputs.
-        if hasattr(encoder, "_hf_hook"):
-            encoder._hf_hook.io_same_device = True
+        if hasattr(self, "hf_device_map"):
+            if hasattr(encoder, "_hf_hook"):
+                encoder._hf_hook.io_same_device = True
+            else:
+                add_hook_to_module(encoder, AlignDevicesHook(io_same_device=True))
 
         # 2. Prepare encoder args and encoder kwargs from model kwargs.
         irrelevant_prefix = ["decoder_", "cross_attn", "use_cache"]
@@ -433,11 +434,20 @@ class GenerationMixin:
         # instantiate warpers list
         warpers = LogitsProcessorList()
 
+        # In beam methods, we need to keep at least one non-eos token to explore continuations that might have a
+        # better score (i.e. keep len(list(generation_config.eos_token_id)) + 1)
+        if generation_config.num_beams > 1:
+            if isinstance(generation_config.eos_token_id, list):
+                min_tokens_to_keep = len(generation_config.eos_token_id) + 1
+            else:
+                min_tokens_to_keep = 2
+        else:
+            min_tokens_to_keep = 1
+
         # the following idea is largely copied from this PR: https://github.com/huggingface/transformers/pull/5420/files
         # all samplers can be found in `generation_utils_samplers.py`
         if generation_config.temperature is not None and generation_config.temperature != 1.0:
             warpers.append(TemperatureLogitsWarper(generation_config.temperature))
-        min_tokens_to_keep = 2 if generation_config.num_beams > 1 else 1
         if generation_config.top_k is not None and generation_config.top_k != 0:
             warpers.append(TopKLogitsWarper(top_k=generation_config.top_k, min_tokens_to_keep=min_tokens_to_keep))
         if generation_config.top_p is not None and generation_config.top_p < 1.0:
@@ -466,6 +476,9 @@ class GenerationMixin:
         encoder_input_ids: torch.LongTensor,
         prefix_allowed_tokens_fn: Callable[[int, torch.Tensor], List[int]],
         logits_processor: Optional[LogitsProcessorList],
+        model_kwargs: Optional[Dict[str, Any]] = None,
+        negative_prompt_ids: Optional[torch.Tensor] = None,
+        negative_prompt_attention_mask: Optional[torch.Tensor] = None,
     ) -> LogitsProcessorList:
         """
         This class returns a [`LogitsProcessorList`] list object that contains all relevant [`LogitsProcessor`]
@@ -474,6 +487,16 @@ class GenerationMixin:
         # instantiate processors list
         processors = LogitsProcessorList()
 
+        if generation_config.guidance_scale is not None and generation_config.guidance_scale != 1:
+            processors.append(
+                UnbatchedClassifierFreeGuidanceLogitsProcessor(
+                    generation_config.guidance_scale,
+                    self,
+                    unconditional_ids=negative_prompt_ids,
+                    unconditional_attention_mask=negative_prompt_attention_mask,
+                    use_cache=model_kwargs["use_cache"],
+                )
+            )
         if generation_config.sequence_bias is not None:
             processors.append(SequenceBiasLogitsProcessor(sequence_bias=generation_config.sequence_bias))
 
@@ -571,8 +594,6 @@ class GenerationMixin:
             )
         if generation_config.forced_decoder_ids is not None:
             processors.append(ForceTokensLogitsProcessor(generation_config.forced_decoder_ids))
-        if generation_config.guidance_scale is not None and generation_config.guidance_scale > 1:
-            processors.append(ClassifierFreeGuidanceLogitsProcessor(generation_config.guidance_scale))
         processors = self._merge_criteria_processor_list(processors, logits_processor)
         # `LogitNormalization` should always be the last logit processor, when present
         if generation_config.renormalize_logits is True:
@@ -777,6 +798,36 @@ class GenerationMixin:
         # `prepare_inputs_for_generation` doesn't accept them, then a stricter check can be made ;)
         if "kwargs" in model_args or "model_kwargs" in model_args:
             model_args |= set(inspect.signature(self.forward).parameters)
+
+        # Encoder-Decoder models may also need Encoder arguments from `model_kwargs`
+        if self.config.is_encoder_decoder:
+            base_model = getattr(self, self.base_model_prefix, None)
+
+            # allow encoder kwargs
+            encoder = getattr(self, "encoder", None)
+            # `MusicgenForConditionalGeneration` has `text_encoder` and `audio_encoder`.
+            # Also, it has `base_model_prefix = "encoder_decoder"` but there is no `self.encoder_decoder`
+            # TODO: A better way to handle this.
+            if encoder is None and base_model is not None:
+                encoder = getattr(base_model, "encoder", None)
+
+            if encoder is not None:
+                encoder_model_args = set(inspect.signature(encoder.forward).parameters)
+                model_args |= encoder_model_args
+
+            # allow decoder kwargs
+            decoder = getattr(self, "decoder", None)
+            if decoder is None and base_model is not None:
+                decoder = getattr(base_model, "decoder", None)
+
+            if decoder is not None:
+                decoder_model_args = set(inspect.signature(decoder.forward).parameters)
+                model_args |= {f"decoder_{x}" for x in decoder_model_args}
+
+            # allow assistant_encoder_outputs to be passed if we're doing assisted generating
+            if "assistant_encoder_outputs" in model_kwargs:
+                model_args |= {"assistant_encoder_outputs"}
+
         for key, value in model_kwargs.items():
             if value is not None and key not in model_args:
                 unused_model_args.append(key)
@@ -786,6 +837,89 @@ class GenerationMixin:
                 f"The following `model_kwargs` are not used by the model: {unused_model_args} (note: typos in the"
                 " generate arguments will also show up in this list)"
             )
+
+    def _validate_generated_length(self, generation_config, input_ids_length, has_default_max_length):
+        """Performs validation related to the resulting generated length"""
+
+        # 1. Max length warnings related to poor parameterization
+        if has_default_max_length and generation_config.max_new_tokens is None and generation_config.max_length == 20:
+            # 20 is the default max_length of the generation config
+            warnings.warn(
+                f"Using the model-agnostic default `max_length` (={generation_config.max_length}) to control the "
+                "generation length. We recommend setting `max_new_tokens` to control the maximum length of the "
+                "generation.",
+                UserWarning,
+            )
+        if input_ids_length >= generation_config.max_length:
+            input_ids_string = "decoder_input_ids" if self.config.is_encoder_decoder else "input_ids"
+            warnings.warn(
+                f"Input length of {input_ids_string} is {input_ids_length}, but `max_length` is set to"
+                f" {generation_config.max_length}. This can lead to unexpected behavior. You should consider"
+                " increasing `max_new_tokens`.",
+                UserWarning,
+            )
+
+        # 2. Min length warnings due to unfeasible parameter combinations
+        min_length_error_suffix = (
+            " Generation will stop at the defined maximum length. You should decrease the minimum length and/or "
+            "increase the maximum length."
+        )
+        if has_default_max_length:
+            min_length_error_suffix += (
+                f" Note that `max_length` is set to {generation_config.max_length}, its default value."
+            )
+        if generation_config.min_length is not None and generation_config.min_length > generation_config.max_length:
+            warnings.warn(
+                f"Unfeasible length constraints: `min_length` ({generation_config.min_length}) is larger than"
+                f" the maximum possible length ({generation_config.max_length})." + min_length_error_suffix,
+                UserWarning,
+            )
+        if generation_config.min_new_tokens is not None:
+            min_length = generation_config.min_new_tokens + input_ids_length
+            if min_length > generation_config.max_length:
+                warnings.warn(
+                    f"Unfeasible length constraints: `min_new_tokens` ({generation_config.min_new_tokens}), when "
+                    f"added to the prompt length ({input_ids_length}), is larger than"
+                    f" the maximum possible length ({generation_config.max_length})." + min_length_error_suffix,
+                    UserWarning,
+                )
+
+    def _extend_attention_mask(self, model_kwargs: Dict[str, Any], new_mask_length: int) -> Dict[str, Any]:
+        if self.config.is_encoder_decoder:
+            key = "decoder_attention_mask"
+        else:
+            key = "attention_mask"
+
+        if key not in model_kwargs:
+            return model_kwargs
+
+        mask = model_kwargs[key]
+        mask_extension_length = new_mask_length - mask.shape[1]
+
+        if mask_extension_length < 0:
+            raise ValueError("Cannot extend attention mask to a length less than it already is")
+
+        model_kwargs[key] = torch.cat(
+            [mask, mask.new_ones((mask.shape[0], mask_extension_length))],
+            dim=-1,
+        )
+
+        return model_kwargs
+
+    def _extend_token_type_ids(self, model_kwargs: Dict[str, Any], new_length: int) -> Dict[str, Any]:
+        if "token_type_ids" not in model_kwargs or model_kwargs["token_type_ids"] is None:
+            return model_kwargs
+
+        token_type_ids = model_kwargs["token_type_ids"]
+        final_token_type = token_type_ids[:, -1].unsqueeze(-1)
+        extension_length = new_length - token_type_ids.shape[1]
+        token_type_copies = final_token_type.repeat(1, extension_length)
+        model_kwargs["token_type_ids"] = torch.cat(
+            [model_kwargs["token_type_ids"], token_type_copies],
+            dim=-1,
+        )
+
+        return model_kwargs
 
     @torch.no_grad()
     def generate(
@@ -799,6 +933,8 @@ class GenerationMixin:
         assistant_model: Optional["PreTrainedModel"] = None,
         streamer: Optional["BaseStreamer"] = None,
         generation_strategy: Optional[Union[str, GenerationStrategy]] = None,
+        negative_prompt_ids: Optional[torch.Tensor] = None,
+        negative_prompt_attention_mask: Optional[torch.Tensor] = None,
         **kwargs,
     ) -> Union[GenerateOutput, torch.LongTensor]:
         r"""
@@ -848,7 +984,9 @@ class GenerationMixin:
             stopping_criteria (`StoppingCriteriaList`, *optional*):
                 Custom stopping criteria that complement the default stopping criteria built from arguments and a
                 generation config. If a stopping criteria is passed that is already created with the arguments or a
-                generation config an error is thrown. This feature is intended for advanced users.
+                generation config an error is thrown. If your stopping criteria depends on the `scores` input, make
+                sure you pass `return_dict_in_generate=True, output_scores=True` to `generate`. This feature is
+                intended for advanced users.
             prefix_allowed_tokens_fn (`Callable[[int, torch.Tensor], List[int]]`, *optional*):
                 If provided, this function constraints the beam search to allowed tokens only at each step. If not
                 provided no constraint is applied. This function takes 2 arguments: the batch ID `batch_id` and
@@ -868,6 +1006,11 @@ class GenerationMixin:
             streamer (`BaseStreamer`, *optional*):
                 Streamer object that will be used to stream the generated sequences. Generated tokens are passed
                 through `streamer.put(token_ids)` and the streamer is responsible for any further processing.
+            negative_prompt_ids (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
+                The negative prompt needed for some processors such as CFG. The batch size must match the input batch
+                size. This is an experimental feature, subject to breaking API changes in future versions.
+            negative_prompt_attention_mask (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
+                Attention_mask for `negative_prompt_ids`.
             kwargs (`Dict[str, Any]`, *optional*):
                 Ad hoc parametrization of `generate_config` and/or additional model-specific kwargs that will be
                 forwarded to the `forward` function of the model. If the model is an encoder-decoder model, encoder
@@ -905,16 +1048,20 @@ class GenerationMixin:
 
         # priority: `generation_config` argument > `model.generation_config` (the default generation config)
         if generation_config is None:
-            # legacy: users may modify the model configuration to control generation -- update the generation config
-            # model attribute accordingly, if it was created from the model config
-            if self.generation_config._from_model_config:
+            # legacy: users may modify the model configuration to control generation. To trigger this legacy behavior,
+            # two conditions must be met
+            # 1) the generation config must have been created from the model config (`_from_model_config` field);
+            # 2) the generation config must have seen no modification since its creation (the hash is the same).
+            if self.generation_config._from_model_config and self.generation_config._original_object_hash == hash(
+                self.generation_config
+            ):
                 new_generation_config = GenerationConfig.from_model_config(self.config)
                 if new_generation_config != self.generation_config:
                     warnings.warn(
                         "You have modified the pretrained model configuration to control generation. This is a"
                         " deprecated strategy to control generation and will be removed soon, in a future version."
-                        " Please use a generation configuration file (see"
-                        " https://huggingface.co/docs/transformers/main_classes/text_generation )"
+                        " Please use and modify the model generation configuration (see"
+                        " https://huggingface.co/docs/transformers/generation_strategies#default-text-generation-configuration )"
                     )
                     self.generation_config = new_generation_config
             generation_config = self.generation_config
@@ -1006,37 +1153,18 @@ class GenerationMixin:
             streamer.put(input_ids.cpu())
 
         # 6. Prepare `max_length` depending on other stopping criteria.
-        input_ids_seq_length = input_ids.shape[-1]
+        input_ids_length = input_ids.shape[-1]
         has_default_max_length = kwargs.get("max_length") is None and generation_config.max_length is not None
-        if has_default_max_length and generation_config.max_new_tokens is None:
-            warnings.warn(
-                f"Using `max_length`'s default ({generation_config.max_length}) to control the generation length. "
-                "This behaviour is deprecated and will be removed from the config in v5 of Transformers -- we"
-                " recommend using `max_new_tokens` to control the maximum length of the generation.",
-                UserWarning,
-            )
-        elif generation_config.max_new_tokens is not None:
-            if not has_default_max_length:
+        if generation_config.max_new_tokens is not None:
+            if not has_default_max_length and generation_config.max_length is not None:
                 logger.warning(
                     f"Both `max_new_tokens` (={generation_config.max_new_tokens}) and `max_length`(="
                     f"{generation_config.max_length}) seem to have been set. `max_new_tokens` will take precedence. "
                     "Please refer to the documentation for more information. "
                     "(https://huggingface.co/docs/transformers/main/en/main_classes/text_generation)"
                 )
-            generation_config.max_length = generation_config.max_new_tokens + input_ids_seq_length
-
-        if generation_config.min_length is not None and generation_config.min_length > generation_config.max_length:
-            raise ValueError(
-                f"Unfeasible length constraints: the minimum length ({generation_config.min_length}) is larger than"
-                f" the maximum length ({generation_config.max_length})"
-            )
-        if input_ids_seq_length >= generation_config.max_length:
-            input_ids_string = "decoder_input_ids" if self.config.is_encoder_decoder else "input_ids"
-            logger.warning(
-                f"Input length of {input_ids_string} is {input_ids_seq_length}, but `max_length` is set to"
-                f" {generation_config.max_length}. This can lead to unexpected behavior. You should consider"
-                " increasing `max_new_tokens`."
-            )
+            generation_config.max_length = generation_config.max_new_tokens + input_ids_length
+        self._validate_generated_length(generation_config, input_ids_length, has_default_max_length)
 
         # 7. determine generation mode
         if type(generation_strategy) is str:
@@ -1072,6 +1200,7 @@ class GenerationMixin:
             raise ValueError(
                 "`streamer` cannot be used with beam search (yet!). Make sure that `num_beams` is set to 1."
             )
+
         if self.device.type != input_ids.device.type:
             warnings.warn(
                 "You are calling .generate() with the `input_ids` being on a device type different"
@@ -1086,10 +1215,13 @@ class GenerationMixin:
         # 8. prepare distribution pre_processing samplers
         logits_processor = self._get_logits_processor(
             generation_config=generation_config,
-            input_ids_seq_length=input_ids_seq_length,
+            input_ids_seq_length=input_ids_length,
             encoder_input_ids=inputs_tensor,
             prefix_allowed_tokens_fn=prefix_allowed_tokens_fn,
             logits_processor=logits_processor,
+            model_kwargs=model_kwargs,
+            negative_prompt_ids=negative_prompt_ids,
+            negative_prompt_attention_mask=negative_prompt_attention_mask,
         )
 
         # 9. prepare stopping criteria

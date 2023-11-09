@@ -25,7 +25,7 @@ PROCESS_INPUTS_DOCSTRING = r"""
             The id of the *padding* token.
         eos_token_id (`Union[int, List[int]]`, *optional*):
             The id of the *end-of-sequence* token. Optionally, use a list to set multiple *end-of-sequence* tokens.
-        beam_indices (`torch.LongTensor]`, *optional*):
+        beam_indices (`torch.LongTensor`, *optional*):
             Beam indices indicating to which beam hypothesis each token correspond.
         group_index (`int`, *optional*):
             The index of the group of beams. Used with [`~PreTrainedModel.group_beam_search`].
@@ -68,80 +68,6 @@ FINALIZE_INPUTS_DOCSTRING = r"""
         due to the `eos_token_id`.
 
 """
-
-
-
-class BeamHypotheses:
-    def __init__(self, num_beams: int, length_penalty: float, early_stopping: bool, max_length: Optional[int] = None):
-        """
-        Initialize n-best list of hypotheses.
-        """
-        self.length_penalty = length_penalty
-        self.early_stopping = early_stopping
-        self.max_length = max_length
-        self.num_beams = num_beams
-        self.beams = []
-        self.worst_score = 1e9
-
-        if not isinstance(self.early_stopping, bool) and self.max_length is None:
-            raise ValueError(
-                "When `do_early_stopping` is set to a string, `max_length` must be defined. Ensure it is passed to the"
-                " BeamScorer class instance at initialization time."
-            )
-
-    def __len__(self):
-        """
-        Number of hypotheses in the list.
-        """
-        return len(self.beams)
-
-    def add(self, hyp: torch.LongTensor, sum_logprobs: float, beam_indices: Optional[torch.LongTensor] = None,
-            beam_gumbel: Optional[torch.LongTensor] = None):
-        """
-        Add a new hypothesis to the list.
-        """
-        score = sum_logprobs / (hyp.shape[-1] ** self.length_penalty)
-        if len(self) < self.num_beams or score > self.worst_score:
-            self.beams.append((score, hyp, beam_indices, beam_gumbel))
-            if len(self) > self.num_beams:
-                key = lambda tup: tup[0] if tup[3] is None else tup[3]
-                sorted_next_scores = sorted([(key(tup), idx) for idx, tup in enumerate(self.beams)])
-                del self.beams[sorted_next_scores[0][1]]
-                self.worst_score = sorted_next_scores[1][0]
-            else:
-                self.worst_score = min(score, self.worst_score)
-
-    def is_done(self, best_sum_logprobs: float, cur_len: int) -> bool:
-        """
-        If there are enough hypotheses and that none of the hypotheses being generated can become better than the worst
-        one in the heap, then we are done with this sentence.
-        """
-
-        if len(self) < self.num_beams:
-            return False
-
-        # `True`: stop as soon as at least `num_beams` hypotheses are finished
-        if self.early_stopping is True:
-            return True
-        # `False`: heuristic -- compute best possible score from `cur_len`, even though it is not entirely accurate
-        #  when `length_penalty` is positive. See the discussion below for more details.
-        # https://github.com/huggingface/transformers/pull/20901#issuecomment-1369845565
-        elif self.early_stopping is False:
-            highest_attainable_score = best_sum_logprobs / cur_len**self.length_penalty
-            ret = self.worst_score >= highest_attainable_score
-            return ret
-        # `"never"`: compute the best possible score, depending on the signal of `length_penalty`
-        else:
-            # `length_penalty` > 0.0 -> max denominator is obtaned from `max_length`, not from `cur_len` -> min
-            # abs(`highest_attainable_score`) is obtained -> `highest_attainable_score` is negative, hence we obtain
-            # its max this way
-            if self.length_penalty > 0.0:
-                highest_attainable_score = best_sum_logprobs / self.max_length**self.length_penalty
-            # the opposite logic applies here (max `highest_attainable_score` from `cur_len`)
-            else:
-                highest_attainable_score = best_sum_logprobs / cur_len**self.length_penalty
-            ret = self.worst_score >= highest_attainable_score
-            return ret
 
 
 class BeamScorer(ABC):
@@ -208,7 +134,7 @@ class BeamSearchScorer(BeamScorer):
         num_beam_hyps_to_keep (`int`, *optional*, defaults to 1):
             The number of beam hypotheses that shall be returned upon calling
             [`~transformer.BeamSearchScorer.finalize`].
-        num_beam_groups (`int`):
+        num_beam_groups (`int`, *optional*, defaults to 1):
             Number of groups to divide `num_beams` into in order to ensure diversity among different groups of beams.
             See [this paper](https://arxiv.org/pdf/1610.02424.pdf) for more details.
         max_length (`int`, *optional*):
@@ -487,3 +413,77 @@ class BeamSearchScorer(BeamScorer):
                 "beam_gumbels": best_gumbels,
             }
         )
+
+
+
+class BeamHypotheses:
+    def __init__(self, num_beams: int, length_penalty: float, early_stopping: bool, max_length: Optional[int] = None):
+        """
+        Initialize n-best list of hypotheses.
+        """
+        self.length_penalty = length_penalty
+        self.early_stopping = early_stopping
+        self.max_length = max_length
+        self.num_beams = num_beams
+        self.beams = []
+        self.worst_score = 1e9
+
+        if not isinstance(self.early_stopping, bool) and self.max_length is None:
+            raise ValueError(
+                "When `do_early_stopping` is set to a string, `max_length` must be defined. Ensure it is passed to the"
+                " BeamScorer class instance at initialization time."
+            )
+
+    def __len__(self):
+        """
+        Number of hypotheses in the list.
+        """
+        return len(self.beams)
+
+    def add(self, hyp: torch.LongTensor, sum_logprobs: float, beam_indices: Optional[torch.LongTensor] = None,
+            beam_gumbel: Optional[torch.LongTensor] = None):
+        """
+        Add a new hypothesis to the list.
+        """
+        score = sum_logprobs / (hyp.shape[-1] ** self.length_penalty)
+        if len(self) < self.num_beams or score > self.worst_score:
+            self.beams.append((score, hyp, beam_indices, beam_gumbel))
+            if len(self) > self.num_beams:
+                key = lambda tup: tup[0] if tup[3] is None else tup[3]
+                sorted_next_scores = sorted([(key(tup), idx) for idx, tup in enumerate(self.beams)])
+                del self.beams[sorted_next_scores[0][1]]
+                self.worst_score = sorted_next_scores[1][0]
+            else:
+                self.worst_score = min(score, self.worst_score)
+
+    def is_done(self, best_sum_logprobs: float, cur_len: int) -> bool:
+        """
+        If there are enough hypotheses and that none of the hypotheses being generated can become better than the worst
+        one in the heap, then we are done with this sentence.
+        """
+
+        if len(self) < self.num_beams:
+            return False
+
+        # `True`: stop as soon as at least `num_beams` hypotheses are finished
+        if self.early_stopping is True:
+            return True
+        # `False`: heuristic -- compute best possible score from `cur_len`, even though it is not entirely accurate
+        #  when `length_penalty` is positive. See the discussion below for more details.
+        # https://github.com/huggingface/transformers/pull/20901#issuecomment-1369845565
+        elif self.early_stopping is False:
+            highest_attainable_score = best_sum_logprobs / cur_len**self.length_penalty
+            ret = self.worst_score >= highest_attainable_score
+            return ret
+        # `"never"`: compute the best possible score, depending on the signal of `length_penalty`
+        else:
+            # `length_penalty` > 0.0 -> max denominator is obtaned from `max_length`, not from `cur_len` -> min
+            # abs(`highest_attainable_score`) is obtained -> `highest_attainable_score` is negative, hence we obtain
+            # its max this way
+            if self.length_penalty > 0.0:
+                highest_attainable_score = best_sum_logprobs / self.max_length**self.length_penalty
+            # the opposite logic applies here (max `highest_attainable_score` from `cur_len`)
+            else:
+                highest_attainable_score = best_sum_logprobs / cur_len**self.length_penalty
+            ret = self.worst_score >= highest_attainable_score
+            return ret

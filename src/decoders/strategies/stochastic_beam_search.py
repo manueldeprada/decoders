@@ -67,7 +67,7 @@ class SBSLogitProcessor(LogitsProcessor):
         scores = scores.clamp(min=-1e9)
 
         if len(past_scores)==0:  # first token
-            last_gumbels = gumbel(size=(self.batch_size,))  # shape (batch_size, )
+            last_gumbels = gumbel(size=(self.batch_size,)).to(device)  # shape (batch_size, )
             # expand (batch_size, ) to (batch_size * num_beams, )
             last_gumbels = last_gumbels.repeat_interleave(self.num_beams, dim=0)
         else:

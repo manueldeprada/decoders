@@ -2,6 +2,9 @@ from typing import Optional, Union, List, TYPE_CHECKING
 
 import torch
 import torch.distributed as dist
+import warnings
+import inspect
+import copy
 
 from transformers.generation.configuration_utils import GenerationConfig
 from transformers.generation.logits_process import LogitsProcessorList
@@ -171,8 +174,41 @@ class AssistedDecoder(GenerationStrategy):
             raise ValueError("assisted generate requires `use_cache=True`")
 
         # Assistant: initialize assistant-related variables
-        if not hasattr(assistant_model, "max_assistant_tokens"):
-            assistant_model.max_assistant_tokens = 5  # this value, which will be updated, persists across calls
+        if hasattr(assistant_model, "num_assistant_tokens"):
+            warnings.warn(
+                "Setting `num_assistant_tokens` via `assistant_model.num_assistant_tokens` is deprecated and will be removed in v.37. Make sure to set `num_assistant_tokens` via the generation_config instead.",
+                FutureWarning,
+            )
+            num_assistant_tokens = assistant_model.num_assistant_tokens
+        else:
+            num_assistant_tokens = assistant_model.generation_config.num_assistant_tokens
+
+        # check if assistant model accepts encoder_outputs
+        assistant_accepts_encoder_outputs = "encoder_outputs" in set(
+            inspect.signature(assistant_model.forward).parameters.keys()
+        )
+
+        # 11. If the assistant model is an encoder-decoder, prepare its encoder outputs
+        if assistant_model.config.is_encoder_decoder and "assistant_encoder_outputs" not in model_kwargs:
+            assistant_model_kwargs = copy.deepcopy(model_kwargs)
+            inputs_tensor, model_input_name, assistant_model_kwargs = assistant_model._prepare_model_inputs(
+                inputs_tensor, assistant_model.generation_config.bos_token_id, assistant_model_kwargs
+            )
+            assistant_model_kwargs = assistant_model._prepare_encoder_decoder_kwargs_for_generation(
+                inputs_tensor, assistant_model_kwargs, model_input_name
+            )
+            model_kwargs["assistant_encoder_outputs"] = assistant_model_kwargs["encoder_outputs"]
+
+        if (
+            not assistant_model.config.is_encoder_decoder
+            and assistant_accepts_encoder_outputs
+            and "encoder_outputs" in model_kwargs
+        ):
+            # some assistants might be assymetric (many more enc layers than dec layers)
+            # encoder-decoder models that share the exact same encoder as the teacher
+            # in this case the assistant only needs to load the light-weight decoder,
+            # but still requires `encoder_outputs` to be passed
+            model_kwargs["assistant_encoder_outputs"] = model_kwargs["encoder_outputs"]
 
         # init values
         logits_processor = logits_processor if logits_processor is not None else LogitsProcessorList()
@@ -245,27 +281,28 @@ class AssistedDecoder(GenerationStrategy):
             # `.generate()` call if we decide to add `past_key_values` as a possible output of generate, as we
             # need access to the assistant cache to secure strong speedups.
             candidate_input_ids = input_ids
-            for _ in range(int(assistant_model.max_assistant_tokens)):
+            for _ in range(int(num_assistant_tokens)):
                 # 1.1. use the assistant model to obtain the next candidate logits
                 if "assistant_past_key_values" in model_kwargs:
                     prev_seq_len = model_kwargs["assistant_past_key_values"][0][assistant_kv_indexing].shape[-2]
                     # `new_token_len` can be 1 or 2 (next token in assistant + last token picked by the larger model)
                     new_token_len = candidate_input_ids.shape[1] - prev_seq_len
                     assist_inputs = candidate_input_ids[:, -new_token_len:]
-                    assist_attn = torch.ones_like(candidate_input_ids)
                     # TODO (joao): make it compatible with models that use unconventional fwd pass logic, like blip2
                     if assistant_model.config.is_encoder_decoder:
                         assistant_model_outputs = assistant_model(
                             decoder_input_ids=assist_inputs,
-                            decoder_attention_mask=assist_attn,
                             past_key_values=model_kwargs["assistant_past_key_values"],
                             encoder_outputs=model_kwargs["assistant_encoder_outputs"],
                         )
                     else:
+                        encoder_kwargs = {}
+
+                        if assistant_accepts_encoder_outputs and "assistant_encoder_outputs" in model_kwargs:
+                            encoder_kwargs["encoder_outputs"] = model_kwargs["assistant_encoder_outputs"]
+
                         assistant_model_outputs = assistant_model(
-                            assist_inputs,
-                            attention_mask=assist_attn,
-                            past_key_values=model_kwargs["assistant_past_key_values"],
+                            assist_inputs, past_key_values=model_kwargs["assistant_past_key_values"], **encoder_kwargs
                         )
                 else:
                     if assistant_model.config.is_encoder_decoder:
@@ -274,7 +311,12 @@ class AssistedDecoder(GenerationStrategy):
                             encoder_outputs=model_kwargs["assistant_encoder_outputs"],
                         )
                     else:
-                        assistant_model_outputs = assistant_model(candidate_input_ids)
+                        encoder_kwargs = {}
+
+                        if assistant_accepts_encoder_outputs and "assistant_encoder_outputs" in model_kwargs:
+                            encoder_kwargs["encoder_outputs"] = model_kwargs["assistant_encoder_outputs"]
+
+                        assistant_model_outputs = assistant_model(candidate_input_ids, **encoder_kwargs)
 
                 # 1.2. greedily select the next candidate token
                 model_kwargs["assistant_past_key_values"] = assistant_model_outputs.past_key_values
@@ -302,54 +344,36 @@ class AssistedDecoder(GenerationStrategy):
             # `candidate_length + 1` relevant logits from this process: in the event that all candidates are correct,
             # we use this forward pass to also pick the subsequent logits in the original model.
 
-            # 2.1. Run a forward pass on the candidate sequence
-            if "past_key_values" in model_kwargs:
-                model_attn = torch.ones_like(candidate_input_ids)
-                model_input_ids = candidate_input_ids[:, -candidate_length - 1:]
-                if model.config.is_encoder_decoder:
-                    outputs = model(
-                        decoder_input_ids=model_input_ids,
-                        decoder_attention_mask=model_attn,
-                        past_key_values=model_kwargs["past_key_values"],
-                        encoder_outputs=model_kwargs["encoder_outputs"],
-                        output_attentions=output_attentions,
-                        output_hidden_states=output_hidden_states,
-                        use_cache=True,
-                    )
-                else:
-                    outputs = model(
-                        model_input_ids,
-                        attention_mask=model_attn,
-                        past_key_values=model_kwargs["past_key_values"],
-                        output_attentions=output_attentions,
-                        output_hidden_states=output_hidden_states,
-                        use_cache=True,
-                    )
-            else:
-                if model.config.is_encoder_decoder:
-                    outputs = model(
-                        decoder_input_ids=candidate_input_ids,
-                        encoder_outputs=model_kwargs["encoder_outputs"],
-                        output_attentions=output_attentions,
-                        output_hidden_states=output_hidden_states,
-                        use_cache=True,
-                    )
-                else:
-                    outputs = model(
-                        candidate_input_ids,
-                        output_attentions=output_attentions,
-                        output_hidden_states=output_hidden_states,
-                        use_cache=True,
-                    )
+            # 2.1. Prepare the model inputs
+            candidate_kwargs = copy.copy(model_kwargs)
+            candidate_kwargs = model._extend_attention_mask(candidate_kwargs, candidate_input_ids.shape[1])
+            candidate_kwargs = model._extend_token_type_ids(candidate_kwargs, candidate_input_ids.shape[1])
 
-            # 2.2. Process the new logits
-            new_logits = outputs.logits[:, -candidate_length - 1:]  # excludes the input prompt if present
+            model_inputs = model.prepare_inputs_for_generation(candidate_input_ids, **candidate_kwargs)
+
+            # 2.2. Run a forward pass on the candidate sequence
+            outputs = model(
+                **model_inputs,
+                output_attentions=output_attentions,
+                output_hidden_states=output_hidden_states,
+            )
+
+            # 2.3. Process the new logits
+            new_logits = outputs.logits[:, -candidate_length - 1 :]  # excludes the input prompt if present
             if len(logits_processor) > 0:
-                for i in range(candidate_length):
+                for i in range(candidate_length + 1):
                     new_logits[:, i, :] = logits_processor(candidate_input_ids[:, : cur_len + i], new_logits[:, i, :])
             if len(logits_warper) > 0:
-                for i in range(candidate_length):
+                for i in range(candidate_length + 1):
                     new_logits[:, i, :] = logits_warper(candidate_input_ids[:, : cur_len + i], new_logits[:, i, :])
+
+            # 3. Obtain the next tokens from the original model logits.
+            if do_sample:
+                probs = new_logits.softmax(dim=-1)
+                selected_tokens = torch.multinomial(probs[0, :, :], num_samples=1).squeeze(1)[None, :]
+            else:
+                selected_tokens = new_logits.argmax(dim=-1)
+
 
             # 3. Obtain the next tokens from the original model logits.
             if do_sample:
@@ -390,13 +414,13 @@ class AssistedDecoder(GenerationStrategy):
             # 6. Adjust the max number of assistant tokens to use in the next iteration. This is a simple heuristic,
             # probably can be improved -- we want to balance the benefits of getting assistant tokens correct with the
             # cost of forecasting incorrect assistant tokens.
-            if n_matches == int(assistant_model.max_assistant_tokens):
-                assistant_model.max_assistant_tokens += 2.0
-            else:
-                assistant_model.max_assistant_tokens = max(1.0, assistant_model.max_assistant_tokens - 1.0)
+            if assistant_model.generation_config.num_assistant_tokens_schedule == "heuristic":
+                if n_matches == int(num_assistant_tokens):
+                    num_assistant_tokens += 2.0
+                else:
+                    num_assistant_tokens = max(1.0, num_assistant_tokens - 1.0)
 
             # Assistant: main logic end
-
             if synced_gpus and this_peer_finished:
                 continue  # don't waste resources running the code we don't need
 

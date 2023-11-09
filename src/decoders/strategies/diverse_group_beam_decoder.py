@@ -133,13 +133,14 @@ class DiverseGroupBeamDecoder(GenerationStrategy):
         Examples:
 
         ```python
-        >>> from transformers.generation import BeamSearchScorer        >>> from transformers import (
+        >>> from transformers import (
         ...     AutoTokenizer,
         ...     AutoModelForSeq2SeqLM,
         ...     LogitsProcessorList,
         ...     MinLengthLogitsProcessor,
         ...     HammingDiversityLogitsProcessor,
-        ...     )
+        ...     BeamSearchScorer,
+        ... )
         >>> import torch
 
         >>> tokenizer = AutoTokenizer.from_pretrained("t5-base")
@@ -342,9 +343,6 @@ class DiverseGroupBeamDecoder(GenerationStrategy):
                 # select outputs of beams of current group only
                 next_token_logits = outputs.logits[batch_group_indices, -1, :]
 
-                # # hack: adjust tokens for Marian. For Marian we have to make sure that the `pad_token_id`
-                # # cannot be generated both before and after the `nn.functional.log_softmax` operation.
-                # next_token_logits = model.adjust_logits_during_generation(next_token_logits, cur_len=cur_len)
                 next_token_scores = nn.functional.log_softmax(
                     next_token_logits, dim=-1
                 )  # (batch_size * group_size, vocab_size)
@@ -362,9 +360,10 @@ class DiverseGroupBeamDecoder(GenerationStrategy):
                 # reshape for beam search
                 next_token_scores = next_token_scores.view(batch_size, group_size * vocab_size)
 
-                # Sample 2 next tokens for each beam (so we have some spare tokens and match output of beam search)
+                # Sample 1 + len(eos_token_id) next tokens for each beam so we have at least 1 non eos token per beam.
+                n_eos_tokens = len(eos_token_id) if eos_token_id else 0
                 next_token_scores, next_tokens = torch.topk(
-                    next_token_scores, 2 * group_size, dim=1, largest=True, sorted=True
+                    next_token_scores, max(2, 1 + n_eos_tokens) * group_size, dim=1, largest=True, sorted=True
                 )
 
                 next_indices = torch.div(next_tokens, vocab_size, rounding_mode="floor")

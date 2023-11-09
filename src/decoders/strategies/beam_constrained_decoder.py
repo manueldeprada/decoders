@@ -124,12 +124,13 @@ class ConstrainedDecoder(GenerationStrategy):
         Examples:
 
         ```python
-        >>> from transformers.generation import ConstrainedBeamSearchScorer        >>> from transformers import (
+        >>> from transformers import (
         ...     AutoTokenizer,
         ...     AutoModelForSeq2SeqLM,
         ...     LogitsProcessorList,
         ...     MinLengthLogitsProcessor,
-        ...      PhrasalConstraint,
+        ...     ConstrainedBeamSearchScorer,
+        ...     PhrasalConstraint,
         ... )
         >>> import torch
 
@@ -177,6 +178,7 @@ class ConstrainedDecoder(GenerationStrategy):
         >>> tokenizer.batch_decode(outputs, skip_special_tokens=True)
         ['Wie alt sind Sie?']
         ```"""
+
         if self.check_config:
             if self.config.num_return_sequences > self.config.num_beams:
                 raise ValueError("`num_return_sequences` has to be smaller or equal to `num_beams`.")
@@ -283,8 +285,21 @@ class ConstrainedDecoder(GenerationStrategy):
             else self.config.return_dict_in_generate
         )
 
+        batch_size = len(self.scorer._beam_hyps)
+        num_beams = self.scorer.num_beams
+
+        batch_beam_size, cur_len = input_ids.shape
+
+        if num_beams * batch_size != batch_beam_size:
+            raise ValueError(
+                f"Batch dimension of `input_ids` should be {num_beams * batch_size}, but is {batch_beam_size}."
+            )
+
         # init attention / hidden states / scores tuples
         scores = () if (return_dict_in_generate and output_scores) else None
+        beam_indices = (
+            tuple(() for _ in range(batch_beam_size)) if (return_dict_in_generate and output_scores) else None
+        )
         decoder_attentions = () if (return_dict_in_generate and output_attentions) else None
         cross_attentions = () if (return_dict_in_generate and output_attentions) else None
         decoder_hidden_states = () if (return_dict_in_generate and output_hidden_states) else None
@@ -294,16 +309,6 @@ class ConstrainedDecoder(GenerationStrategy):
             encoder_attentions = model_kwargs["encoder_outputs"].get("attentions") if output_attentions else None
             encoder_hidden_states = (
                 model_kwargs["encoder_outputs"].get("hidden_states") if output_hidden_states else None
-            )
-
-        batch_size = len(self.scorer._beam_hyps)
-        num_beams = self.scorer.num_beams
-
-        batch_beam_size, cur_len = input_ids.shape
-
-        if num_beams * batch_size != batch_beam_size:
-            raise ValueError(
-                f"Batch dimension of `input_ids` should be {num_beams * batch_size}, but is {batch_beam_size}."
             )
 
         # initialise score of first beam with 0 and the rest with -1e9. This makes sure that only tokens
@@ -344,7 +349,9 @@ class ConstrainedDecoder(GenerationStrategy):
 
             next_token_scores_processed = logits_processor(input_ids, next_token_scores)
 
-            next_token_scores = next_token_scores_processed + beam_scores[:, None].expand_as(next_token_scores)
+            next_token_scores = next_token_scores_processed + beam_scores[:, None].expand_as(
+                next_token_scores_processed
+            )
 
             scores_for_all_vocab = next_token_scores.clone()
 
@@ -370,9 +377,10 @@ class ConstrainedDecoder(GenerationStrategy):
             vocab_size = next_token_scores.shape[-1]
             next_token_scores = next_token_scores.view(batch_size, num_beams * vocab_size)
 
-            # Sample 2 next tokens for each beam (so we have some spare tokens and match output of beam search)
+            # Sample 1 + len(eos_token_id) next tokens for each beam so we have at least 1 non eos token per beam.
+            n_eos_tokens = len(eos_token_id) if eos_token_id else 0
             next_token_scores, next_tokens = torch.topk(
-                next_token_scores, 2 * num_beams, dim=1, largest=True, sorted=True
+                next_token_scores, max(2, 1 + n_eos_tokens) * num_beams, dim=1, largest=True, sorted=True
             )
 
             next_indices = (next_tokens / vocab_size).long()
@@ -387,6 +395,7 @@ class ConstrainedDecoder(GenerationStrategy):
                 scores_for_all_vocab,
                 pad_token_id=pad_token_id,
                 eos_token_id=eos_token_id,
+                beam_indices=beam_indices,
             )
             beam_scores = beam_outputs["next_beam_scores"]
             beam_next_tokens = beam_outputs["next_beam_tokens"]
@@ -398,6 +407,9 @@ class ConstrainedDecoder(GenerationStrategy):
             )
             if model_kwargs["past_key_values"] is not None:
                 model_kwargs["past_key_values"] = model._reorder_cache(model_kwargs["past_key_values"], beam_idx)
+
+            if return_dict_in_generate and output_scores:
+                beam_indices = tuple((beam_indices[beam_idx[i]] + (beam_idx[i],) for i in range(len(beam_indices))))
 
             # increase cur_len
             cur_len = cur_len + 1
@@ -416,6 +428,7 @@ class ConstrainedDecoder(GenerationStrategy):
             pad_token_id=pad_token_id,
             eos_token_id=eos_token_id,
             max_length=stopping_criteria.max_length,
+            beam_indices=beam_indices,
         )
 
         if return_dict_in_generate:
@@ -426,6 +439,7 @@ class ConstrainedDecoder(GenerationStrategy):
                     sequences=sequence_outputs["sequences"],
                     sequences_scores=sequence_outputs["sequence_scores"],
                     scores=scores,
+                    beam_indices=sequence_outputs["beam_indices"],
                     encoder_attentions=encoder_attentions,
                     encoder_hidden_states=encoder_hidden_states,
                     decoder_attentions=decoder_attentions,
@@ -437,6 +451,7 @@ class ConstrainedDecoder(GenerationStrategy):
                     sequences=sequence_outputs["sequences"],
                     sequences_scores=sequence_outputs["sequence_scores"],
                     scores=scores,
+                    beam_indices=sequence_outputs["beam_indices"],
                     attentions=decoder_attentions,
                     hidden_states=decoder_hidden_states,
                 )
@@ -705,8 +720,9 @@ class DisjunctiveConstraint(Constraint):
     A special [`Constraint`] that is fulfilled by fulfilling just one of several constraints.
 
     Args:
-        nested_token_ids (`List[List[int]]`): a list of words, where each word is a list of ids. This constraint
-        is fulfilled by generating just one from the list of words.
+        nested_token_ids (`List[List[int]]`):
+            A list of words, where each word is a list of ids. This constraint is fulfilled by generating just one from
+            the list of words.
     """
 
     def __init__(self, nested_token_ids: List[List[int]]):
@@ -992,7 +1008,7 @@ class ConstrainedBeamSearchScorer(BeamScorer):
         num_beam_hyps_to_keep (`int`, *optional*, defaults to 1):
             The number of beam hypotheses that shall be returned upon calling
             [`~transformer.BeamSearchScorer.finalize`].
-        num_beam_groups (`int`):
+        num_beam_groups (`int`, *optional*, defaults to 1):
             Number of groups to divide `num_beams` into in order to ensure diversity among different groups of beams.
             See [this paper](https://arxiv.org/pdf/1610.02424.pdf) for more details.
         max_length (`int`, *optional*):
@@ -1065,6 +1081,7 @@ class ConstrainedBeamSearchScorer(BeamScorer):
         scores_for_all_vocab: torch.FloatTensor,
         pad_token_id: Optional[int] = None,
         eos_token_id: Optional[Union[int, List[int]]] = None,
+        beam_indices: Optional[torch.LongTensor] = None,
     ) -> Tuple[torch.Tensor]:
         r"""
         Args:
@@ -1087,6 +1104,8 @@ class ConstrainedBeamSearchScorer(BeamScorer):
                 The id of the *padding* token.
             eos_token_id (`Union[int, List[int]]`, *optional*):
                 The id of the *end-of-sequence* token. Optionally, use a list to set multiple *end-of-sequence* tokens.
+            beam_indices (`torch.LongTensor`, *optional*):
+                Beam indices indicating to which beam hypothesis each token correspond.
 
         Return:
             `UserDict`: A dictionary composed of the fields as defined above:
@@ -1152,9 +1171,15 @@ class ConstrainedBeamSearchScorer(BeamScorer):
 
                     completes_constraint = self.check_completes_constraints(input_ids[batch_beam_idx].cpu().tolist())
                     if completes_constraint:
+                        if beam_indices is not None:
+                            beam_index = beam_indices[batch_beam_idx]
+                            beam_index = beam_index + (batch_beam_idx,)
+                        else:
+                            beam_index = None
                         beam_hyp.add(
                             input_ids[batch_beam_idx].clone(),
                             next_score.item(),
+                            beam_indices=beam_index,
                         )
                 else:
                     # add next predicted token since it is not eos_token
@@ -1349,6 +1374,7 @@ class ConstrainedBeamSearchScorer(BeamScorer):
         max_length: int,
         pad_token_id: Optional[int] = None,
         eos_token_id: Optional[Union[int, List[int]]] = None,
+        beam_indices: Optional[torch.LongTensor] = None,
     ) -> Tuple[torch.LongTensor]:
         batch_size = len(self._beam_hyps)
 
@@ -1371,7 +1397,8 @@ class ConstrainedBeamSearchScorer(BeamScorer):
 
                 completes_constraint = self.check_completes_constraints(final_tokens.cpu().tolist())
                 if completes_constraint:
-                    beam_hyp.add(final_tokens, final_score)
+                    beam_index = beam_indices[batch_beam_idx] if beam_indices is not None else None
+                    beam_hyp.add(final_tokens, final_score, beam_indices=beam_index)
                     ids_collect.append(beam_id)
 
             # due to overly complex constraints or other factors, sometimes we can't gaurantee a successful
@@ -1389,6 +1416,7 @@ class ConstrainedBeamSearchScorer(BeamScorer):
         # select the best hypotheses
         sent_lengths = input_ids.new(batch_size * self.num_beam_hyps_to_keep)
         best = []
+        best_indices = []
         best_scores = torch.zeros(batch_size * self.num_beam_hyps_to_keep, device=self.device, dtype=torch.float32)
 
         # retrieve best hypotheses
@@ -1398,10 +1426,15 @@ class ConstrainedBeamSearchScorer(BeamScorer):
                 best_hyp_tuple = sorted_hyps.pop()
                 best_score = best_hyp_tuple[0]
                 best_hyp = best_hyp_tuple[1]
+                best_index = best_hyp_tuple[2]
                 sent_lengths[self.num_beam_hyps_to_keep * i + j] = len(best_hyp)
 
                 # append to lists
                 best.append(best_hyp)
+
+                # append indices to list
+                best_indices.append(best_index)
+
                 best_scores[i * self.num_beam_hyps_to_keep + j] = best_score
 
         # prepare for adding eos
@@ -1409,15 +1442,28 @@ class ConstrainedBeamSearchScorer(BeamScorer):
 
         sent_max_len = min(sent_lengths_max, max_length) if max_length is not None else sent_lengths_max
         decoded: torch.LongTensor = input_ids.new(batch_size * self.num_beam_hyps_to_keep, sent_max_len)
+
+        if len(best_indices) > 0 and best_indices[0] is not None:
+            indices: torch.LongTensor = input_ids.new(batch_size * self.num_beam_hyps_to_keep, sent_max_len)
+        else:
+            indices = None
+
         # shorter batches are padded if needed
         if sent_lengths.min().item() != sent_lengths.max().item():
             if pad_token_id is None:
                 raise ValueError("`pad_token_id` has to be defined")
             decoded.fill_(pad_token_id)
 
+        if indices is not None:
+            indices.fill_(-1)
+
         # fill with hypotheses and eos_token_id if the latter fits in
-        for i, hypo in enumerate(best):
+        for i, (hypo, best_idx) in enumerate(zip(best, best_indices)):
             decoded[i, : sent_lengths[i]] = hypo
+
+            if indices is not None:
+                indices[i, : len(best_idx)] = torch.tensor(best_idx)
+
             if sent_lengths[i] < sent_max_len:
                 # inserting only the first eos_token_id
                 decoded[i, sent_lengths[i]] = eos_token_id[0]
@@ -1426,5 +1472,6 @@ class ConstrainedBeamSearchScorer(BeamScorer):
             {
                 "sequences": decoded,
                 "sequence_scores": best_scores,
+                "beam_indices": indices,
             }
         )

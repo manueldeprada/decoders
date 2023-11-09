@@ -136,14 +136,15 @@ class BeamSamplingDecoder(GenerationStrategy):
         Examples:
 
         ```python
-        >>> from transformers.generation import BeamSearchScorer        >>> from transformers import (
+        >>> from transformers import (
         ...     AutoTokenizer,
         ...     AutoModelForSeq2SeqLM,
         ...     LogitsProcessorList,
         ...     MinLengthLogitsProcessor,
         ...     TopKLogitsWarper,
         ...     TemperatureLogitsWarper,
-        ...     )
+        ...     BeamSearchScorer,
+        ... )
         >>> import torch
 
         >>> tokenizer = AutoTokenizer.from_pretrained("t5-base")
@@ -200,11 +201,12 @@ class BeamSamplingDecoder(GenerationStrategy):
         # 12. prepare beam search scorer
         batch_size = input_ids.shape[0]
         beam_scorer = BeamSearchScorer(
-            batch_size=batch_size * self.config.num_return_sequences,
+            batch_size=batch_size,
             num_beams=self.config.num_beams,
             device=input_ids.device,
             length_penalty=self.config.length_penalty,
             do_early_stopping=self.config.early_stopping,
+            num_beam_hyps_to_keep=self.config.num_return_sequences,
             max_length=self.config.max_length,
         )
 
@@ -299,16 +301,15 @@ class BeamSamplingDecoder(GenerationStrategy):
             )  # (batch_size * num_beams, vocab_size)
 
             next_token_scores_processed = logits_processor(input_ids, next_token_scores)
-            next_token_scores = next_token_scores_processed + beam_scores[:, None].expand_as(next_token_scores)
-            # Note: logits warpers are intentionally applied after adding running beam scores. On some logits warpers
-            # (like top_p) this is indiferent, but on others (like temperature) it is not. For reference, see
-            # https://github.com/huggingface/transformers/pull/5420#discussion_r449779867
-            next_token_scores = logits_warper(input_ids, next_token_scores)
+            next_token_scores_processed = logits_warper(input_ids, next_token_scores_processed)
+            next_token_scores = next_token_scores_processed + beam_scores[:, None].expand_as(
+                next_token_scores_processed
+            )
 
             # Store scores, attentions and hidden_states when required
             if return_dict_in_generate:
                 if output_scores:
-                    scores += (logits_warper(input_ids, next_token_scores_processed),)
+                    scores += (next_token_scores_processed,)
                 if output_attentions:
                     decoder_attentions += (
                         (outputs.decoder_attentions,) if model.config.is_encoder_decoder else (outputs.attentions,)

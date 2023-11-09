@@ -105,7 +105,7 @@ class BeamSearchDecoder(GenerationStrategy):
         Parameters:
             input_ids (`torch.LongTensor` of shape `(batch_size, sequence_length)`):
                 The sequence used as a prompt for the generation.
-            beam_scorer (`transformers.generation.BeamScorer`):
+            beam_scorer (`BeamScorer`):
                 An derived instance of [`BeamScorer`] that defines how beam hypotheses are constructed, stored and
                 sorted during generation. For more information, the documentation of [`BeamScorer`] should be read.
             logits_processor (`LogitsProcessorList`, *optional*):
@@ -148,12 +148,13 @@ class BeamSearchDecoder(GenerationStrategy):
         Examples:
 
         ```python
-        >>> from transformers.generation import BeamSearchScorer        >>> from transformers import (
+        >>> from transformers import (
         ...     AutoTokenizer,
         ...     AutoModelForSeq2SeqLM,
         ...     LogitsProcessorList,
         ...     MinLengthLogitsProcessor,
-        ...     )
+        ...     BeamSearchScorer,
+        ... )
         >>> import torch
 
         >>> tokenizer = AutoTokenizer.from_pretrained("t5-base")
@@ -310,15 +311,14 @@ class BeamSearchDecoder(GenerationStrategy):
                 continue  # don't waste resources running the code we don't need
 
             next_token_logits = outputs.logits[:, -1, :]
-            # # hack: adjust tokens for Marian. For Marian we have to make sure that the `pad_token_id`
-            # # cannot be generated both before and after the `nn.functional.log_softmax` operation.
-            # next_token_logits = model.adjust_logits_during_generation(next_token_logits, cur_len=cur_len)
             next_token_scores = nn.functional.log_softmax(
                 next_token_logits, dim=-1
             )  # (batch_size * num_beams, vocab_size)
 
             next_token_scores_processed = logits_processor(input_ids, next_token_scores)
-            next_token_scores = next_token_scores_processed + beam_scores[:, None].expand_as(next_token_scores)
+            next_token_scores = next_token_scores_processed + beam_scores[:, None].expand_as(
+                next_token_scores_processed
+            )
 
             # Store scores, attentions and hidden_states when required
             if return_dict_in_generate:
@@ -342,9 +342,10 @@ class BeamSearchDecoder(GenerationStrategy):
             vocab_size = next_token_scores.shape[-1]
             next_token_scores = next_token_scores.view(batch_size, num_beams * vocab_size)
 
-            # Sample 2 next tokens for each beam (so we have some spare tokens and match output of beam search)
+            # Sample 1 + len(eos_token_id) next tokens for each beam so we have at least 1 non eos token per beam.
+            n_eos_tokens = len(eos_token_id) if eos_token_id else 0
             next_token_scores, next_tokens = torch.topk(
-                next_token_scores, 2 * num_beams, dim=1, largest=True, sorted=True
+                next_token_scores, max(2, 1 + n_eos_tokens) * num_beams, dim=1, largest=True, sorted=True
             )
 
             next_indices = torch.div(next_tokens, vocab_size, rounding_mode="floor")
