@@ -1067,6 +1067,9 @@ class GenerationMixin:
             generation_config = self.generation_config
 
         generation_config = copy.deepcopy(generation_config)
+        extra_gen_args = {}
+        if isinstance(generation_strategy, GenerationStrategy):
+            extra_gen_args = generation_strategy.get_extra_gen_args(kwargs)
         model_kwargs = generation_config.update(**kwargs)  # All unused kwargs must be model kwargs
         generation_config.validate()
         self._validate_model_kwargs(model_kwargs.copy())
@@ -1249,6 +1252,7 @@ class GenerationMixin:
             streamer=streamer,
             sequential=generation_config.low_memory,
             **model_kwargs,
+            **extra_gen_args,
         )
 
     def contrastive_search(

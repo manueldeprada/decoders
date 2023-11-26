@@ -87,11 +87,14 @@ class FakeTransformer(PreTrainedModel):
 
 
 class FakeTokenizer(PreTrainedTokenizer):
-    def __init__(self, **kwargs):
+    def __init__(self, bos_token=0, num_seq=2, **kwargs):
         super().__init__(**kwargs)
+        self.bos_token = bos_token
+        self.num_seq = num_seq
 
     def __call__(self, text, **kwargs):
-        return BatchEncoding({"input_ids": torch.tensor([[0],[0]])})
+        tensor = torch.tensor([[self.bos_token]] * self.num_seq) #  default torch.tensor([[0],[0]])
+        return BatchEncoding({"input_ids": tensor})
 
     def batch_decode(self, token_ids, **kwargs):
         return [str(ids) for ids in token_ids]

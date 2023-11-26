@@ -259,25 +259,25 @@ class StochasticBeamSearchDecoder(GenerationStrategy):
             if stopping_criteria.max_length is None:
                 raise ValueError("`max_length` needs to be a stopping_criteria for now.")
 
-            batch_size = input_ids.shape[0]
-            # 11. prepare beam search scorer
-            if self.scorer is None:
-                self.scorer = BeamSearchScorer(
-                    batch_size=batch_size,
-                    num_beams=self.config.num_beams,
-                    device=input_ids.device,
-                    length_penalty=self.config.length_penalty,
-                    do_early_stopping=self.config.early_stopping,
-                    num_beam_hyps_to_keep=self.config.num_return_sequences,
-                    max_length=self.config.max_length,
-                )
-            # 12. interleave input_ids with `num_beams` additional sequences per batch
-            input_ids, model_kwargs = model._expand_inputs_for_generation(
-                input_ids=input_ids,
-                expand_size=self.config.num_beams,
-                is_encoder_decoder=model.config.is_encoder_decoder,
-                **model_kwargs,
+        batch_size = input_ids.shape[0]
+        # 11. prepare beam search scorer
+        if self.scorer is None:
+            self.scorer = BeamSearchScorer(
+                batch_size=batch_size,
+                num_beams=self.config.num_beams,
+                device=input_ids.device,
+                length_penalty=self.config.length_penalty,
+                do_early_stopping=self.config.early_stopping,
+                num_beam_hyps_to_keep=self.config.num_return_sequences,
+                max_length=self.config.max_length,
             )
+        # 12. interleave input_ids with `num_beams` additional sequences per batch
+        input_ids, model_kwargs = model._expand_inputs_for_generation(
+            input_ids=input_ids,
+            expand_size=self.config.num_beams,
+            is_encoder_decoder=model.config.is_encoder_decoder,
+            **model_kwargs,
+        )
         # 13. run beam search
 
         # init values

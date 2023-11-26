@@ -426,6 +426,18 @@ class GenerationStrategy(ABC):
         except ValueError:
             return False
 
+    def get_extra_gen_args(self, kwargs):
+        import inspect
+        # substract __call__ args from super __call__ args
+        own_args = inspect.getfullargspec(self.__call__).args
+        super_args = inspect.getfullargspec(GenerationStrategy.__call__).args
+        own_args = [a for a in own_args if a not in super_args]
+        args = {}
+        for k in own_args:
+            if k in kwargs:
+                args[k] = kwargs.pop(k)
+        return args
+
     @abstractmethod
     def __call__(self,
                  model: Union["PreTrainedModel", "GenerationMixin"],
