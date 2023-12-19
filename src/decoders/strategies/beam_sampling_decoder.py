@@ -213,7 +213,7 @@ class BeamSamplingDecoder(GenerationStrategy):
         # 13. interleave input_ids with `num_beams` additional sequences per batch
         input_ids, model_kwargs = model._expand_inputs_for_generation(
             input_ids=input_ids,
-            expand_size=self.config.num_beams * self.config.num_return_sequences,
+            expand_size=self.config.num_beams,
             is_encoder_decoder=model.config.is_encoder_decoder,
             **model_kwargs,
         )

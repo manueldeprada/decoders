@@ -12,7 +12,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-import types
 import warnings
 from typing import List, Optional, Union, TYPE_CHECKING
 
@@ -66,7 +65,7 @@ class SBSLogitProcessor(LogitsProcessor):
         scores = beam_log_probs.view(-1, 1) + scores  # shape (batch_size * num_beams, vocab_size)
         scores = scores.clamp(min=-1e9)
 
-        if len(past_scores)==0:  # first token
+        if len(past_scores) == 0:  # first token
             last_gumbels = gumbel(size=(self.batch_size,)).to(device)  # shape (batch_size, )
             # expand (batch_size, ) to (batch_size * num_beams, )
             last_gumbels = last_gumbels.repeat_interleave(self.num_beams, dim=0)
@@ -247,7 +246,10 @@ class StochasticBeamSearchDecoder(GenerationStrategy):
             )
         if logits_processor is not None:
             logits_processor = LogitsProcessorList(logits_processor)
-            logits_processor.append(SBSLogitProcessor(num_beams=self.config.num_beams, batch_size=input_ids.shape[0]))
+            if any(isinstance(p, SBSLogitProcessor) for p in logits_processor):
+                pass
+            else:
+                logits_processor.append(SBSLogitProcessor(num_beams=self.config.num_beams, batch_size=input_ids.shape[0]))
         else:
             logits_processor = LogitsProcessorList([SBSLogitProcessor(num_beams=self.config.num_beams,
                                                                       batch_size=input_ids.shape[0])])
@@ -367,9 +369,6 @@ class StochasticBeamSearchDecoder(GenerationStrategy):
                 continue  # don't waste resources running the code we don't need
 
             next_token_logits = outputs.logits[:, -1, :]
-            # # hack: adjust tokens for Marian. For Marian we have to make sure that the `pad_token_id`
-            # # cannot be generated both before and after the `nn.functional.log_softmax` operation.
-            # next_token_logits = model.adjust_logits_during_generation(next_token_logits, cur_len=cur_len)
             next_token_scores = nn.functional.log_softmax(
                 next_token_logits, dim=-1
             )  # (batch_size * num_beams, vocab_size)
