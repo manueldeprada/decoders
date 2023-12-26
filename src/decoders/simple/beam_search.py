@@ -19,7 +19,8 @@ def collate_encoder_states(encoder_states):
         if encoder_states[0][key] is not None and isinstance(encoder_states[0][key], torch.Tensor):
             new_dict[key] = torch.stack([encoder_states[i][key].squeeze() for i in range(len(encoder_states))], dim=0)
     if encoder_states[0].get("encoder_outputs") is not None:
-        new_dict["encoder_outputs"] = collate_encoder_states([encoder_states[i]["encoder_outputs"] for i in range(len(encoder_states))])
+        new_dict["encoder_outputs"] = collate_encoder_states(
+            [encoder_states[i]["encoder_outputs"] for i in range(len(encoder_states))])
     return new_dict
 
 
@@ -37,7 +38,6 @@ class BeamSearchDecoder(GenerationStrategy):
                  input_ids: torch.LongTensor,
                  logits_processor: Optional[LogitsProcessorList] = None,
                  stopping_criteria: Optional[StoppingCriteriaList] = None,
-                 num_beams=5,
                  **model_kwargs,
                  ):
         r"""
@@ -67,18 +67,19 @@ class BeamSearchDecoder(GenerationStrategy):
         logits_processor = logits_processor if logits_processor is not None else LogitsProcessorList()
         stopping_criteria = stopping_criteria if stopping_criteria is not None else StoppingCriteriaList()
 
-        print(f"Running simple beam search. Batch Size: {input_ids.shape[0]}, "
-              f"logit_processor: {logits_processor}, stopping_criteria: {stopping_criteria}, ")
-
         batch_size, _ = input_ids.shape
+        num_beams = self.config.num_beams
+
+        print(f"Running simple beam search. batch: {input_ids.shape[0]}, num_beams: {num_beams}, "
+              f"logit_processor: {logits_processor}, stopping_criteria: {stopping_criteria}, ")
 
         searches = [SimpleBeamSearch(num_beams, model.config.eos_token_id) for _ in range(batch_size)]
         encoder_states = separate_encoder_states(batch_size, model.config.is_encoder_decoder, **model_kwargs)
 
         # 1. Generate initial hypotheses
         model_inputs = model.prepare_inputs_for_generation(input_ids, **model_kwargs)
-        outputs = model(**model_inputs,return_dict=True)
-        log_probs, next_candidates = torch.topk(torch.log_softmax(outputs.logits[:,-1,:], dim=-1), 2 * num_beams)
+        outputs = model(**model_inputs, return_dict=True)
+        log_probs, next_candidates = torch.topk(torch.log_softmax(outputs.logits[:, -1, :], dim=-1), 2 * num_beams)
         for b_idx in range(batch_size):
             for j in range(num_beams):
                 next_token = next_candidates[b_idx, j]
@@ -94,16 +95,13 @@ class BeamSearchDecoder(GenerationStrategy):
                 break  # All beams ended in EOS
             input_ids = pad_tensors([node.sequence for node in nodes], model.config.pad_token_id)
             input_ids = torch.stack(input_ids, dim=0)
-            debug_t = torch.tensor([[    0,  8410,    15,    51,     3, 15432,   440,   103,   322,    19,
-             3,     9,  1144,    13]])
-            if input_ids.shape[1] == 14:
-                print("bop")
             new_model_kwargs = collate_encoder_states([node.encoder_state for node in nodes])
             model_inputs = model.prepare_inputs_for_generation(input_ids, **new_model_kwargs)
             outputs = model(**model_inputs, return_dict=True)
 
             logits = outputs.logits[:, -1, :]
-            log_probs, next_candidates = torch.topk(torch.log_softmax(logits, dim=-1), 2*num_beams)  # (batch_size, 2 * num_beams)
+            log_probs, next_candidates = torch.topk(torch.log_softmax(logits, dim=-1),
+                                                    2 * num_beams)  # (batch_size, 2 * num_beams)
 
             for b_idx in range(log_probs.shape[0]):
                 for j in range(num_beams):
@@ -111,7 +109,7 @@ class BeamSearchDecoder(GenerationStrategy):
                     beam_log_p = nodes[b_idx].log_p + log_probs[b_idx, j]
                     new_seq = torch.cat((input_ids[b_idx], next_token.unsqueeze(0)))
                     node = BeamSearchNode(nodes[b_idx].search, new_seq, beam_log_p, nodes[b_idx].encoder_state)
-                    node.search.add(node, finished=(next_token==model.config.eos_token_id))
+                    node.search.add(node, finished=(next_token == model.config.eos_token_id))
 
             for search in searches:
                 search.prune()
@@ -131,7 +129,7 @@ class BeamSearchDecoder(GenerationStrategy):
         best_scores = torch.tensor(best_scores)
         return SampleEncoderDecoderOutput(
             sequences=best_sents,
-            #scores=best_scores,
+            # scores=best_scores,
             sequences_scores=best_scores,
         )
 
@@ -139,29 +137,30 @@ class BeamSearchDecoder(GenerationStrategy):
 if __name__ == "__main__":
     from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
     from ..__init__ import inject_supervitamined_decoders
-    from ..toolbox import compute_true_logprobs, compute_logprobs_from_scores
 
     tokenizer = AutoTokenizer.from_pretrained("t5-small")
     model = AutoModelForSeq2SeqLM.from_pretrained("t5-small")
     model.eval()
     inject_supervitamined_decoders(model)
-    inputs = tokenizer([#"translate English to German: What is your name, my dear Friend? I missed you so much",
-                           #"translate English to German: How old are you?",
-                           "summarize: Lorem ipsum dolor "
-                       ],
-                       return_tensors="pt", padding=True, truncation=True
-                       )
-    outputs = model.generate(**inputs, decoder_input_ids=torch.tensor([[    0,  8410,    15,    51,     3, 15432,   440,   103,   322,    19, 3,     9,  1144,    13]]),
+    inputs = tokenizer([  # "translate English to German: What is your name, my dear Friend? I missed you so much",
+                          # "translate English to German: How old are you?",
+                        # "a b c 1 2 ",
+                        "summarize: Lorem ipsum dolor "
+                    ],
+                        return_tensors="pt", padding=True, truncation=True
+                    )
+    outputs = model.generate(**inputs,
                              generation_strategy=BeamSearchDecoder(),
-                             generation_config=GenerationConfig(max_new_tokens=100, num_beams = 5,
+                             generation_config=GenerationConfig(max_new_tokens=100, num_beams=5,
                                                                 num_return_sequences=5))
 
-    standard_seqs = model.generate(**inputs, decoder_input_ids = torch.tensor([[    0,  8410,    15,    51,     3, 15432,   440,   103,   322,    19, 3,     9,  1144,    13]]),
+    standard_seqs = model.generate(**inputs,
+                                   # decoder_input_ids = torch.tensor([[    0,  8410,    15,    51,     3, 15432,   440,   103,   322,    19, 3,     9,  1144,    13]]),
                                    num_beams=5, do_sample=0, max_new_tokens=100, length_penalty=0.0,
                                    early_stopping=True, return_dict_in_generate=True, output_scores=True,
                                    num_return_sequences=5)
 
-    #assert torch.all(outputs.sequences == standard_seqs), f"output: {outputs.sequences}, gold: {standard_seqs}"
+    # assert torch.all(outputs.sequences == standard_seqs), f"output: {outputs.sequences}, gold: {standard_seqs}"
     print(f"standard:\n{standard_seqs.sequences}")
     print(f"output:\n{outputs.sequences}")
     for i in standard_seqs.sequences:
@@ -171,7 +170,7 @@ if __name__ == "__main__":
         print(list(tokenizer.convert_ids_to_tokens(i)))
     # print(f"generated text: {tokenizer.batch_decode(outputs.sequences, skip_special_tokens=True)}")
     # print(f"generated tokens: {outputs.sequences}")
-    print(f"generated logp: {outputs.sequences_scores}")
     print(f"standard logp: {standard_seqs.sequences_scores}")
+    print(f"generated logp: {outputs.sequences_scores}")
     # _, recompute_logp = compute_true_logprobs(model, outputs.sequences, encoder_input=inputs)
     # print(f"true logp: {recompute_logp.sum(dim=1)}")

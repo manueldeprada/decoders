@@ -94,7 +94,7 @@ class SimpleBeamSearch(object):
         nodes = BSPriorityQueue()
         # Keep track of how many search paths are already finished (EOS)
         finished = self.final_nodes.qsize()
-        for _ in range(self.beam_size - finished):
+        for _ in range(self.beam_size):# - finished):
             node = self.alive_nodes.get()
             nodes.put(node)
         self.alive_nodes = nodes
