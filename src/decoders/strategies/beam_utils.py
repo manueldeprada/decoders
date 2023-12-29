@@ -285,7 +285,7 @@ class BeamSearchScorer(BeamScorer):
                     beam_idx += 1
 
                 # once the beam for next step is full, don't add more tokens to it.
-                if beam_idx == self.group_size:
+                if beam_idx >= (self.group_size):# - len(self._beam_hyps[batch_group_idx])):
                     break
 
             if beam_idx < self.group_size:
@@ -426,7 +426,7 @@ class BeamHypotheses:
         self.max_length = max_length
         self.num_beams = num_beams
         self.beams = []
-        self.worst_score = 1e9
+        self.worst_score = float("inf")
 
         if not isinstance(self.early_stopping, bool) and self.max_length is None:
             raise ValueError(

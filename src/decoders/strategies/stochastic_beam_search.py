@@ -63,7 +63,7 @@ class SBSLogitProcessor(LogitsProcessor):
         device = input_ids.device
 
         scores = beam_log_probs.view(-1, 1) + scores  # shape (batch_size * num_beams, vocab_size)
-        scores = scores.clamp(min=-1e9)
+        # scores = scores.clamp(min=-1e9)
 
         if len(past_scores) == 0:  # first token
             last_gumbels = gumbel(size=(self.batch_size,)).to(device)  # shape (batch_size, )
@@ -133,6 +133,7 @@ class StochasticBeamSearchDecoder(GenerationStrategy):
                  synced_gpus: bool = False,
                  streamer: Optional["BaseStreamer"] = None,
                  sequential: Optional[bool] = None,
+                 beam_scores_type: Optional[torch.dtype] = torch.float,
                  **model_kwargs,
                  ) -> Union[BeamSearchOutput, torch.LongTensor]:
         r"""
@@ -339,8 +340,8 @@ class StochasticBeamSearchDecoder(GenerationStrategy):
 
         # initialise score of first beam with 0 and the rest with -1e9. This makes sure that only tokens
         # of the first beam are considered to avoid sampling the exact same tokens across all beams.
-        beam_scores = torch.zeros((batch_size, num_beams), dtype=torch.float, device=input_ids.device)
-        beam_scores[:, 1:] = -1e9
+        beam_scores = torch.zeros((batch_size, num_beams), dtype=beam_scores_type, device=input_ids.device)
+        beam_scores[:, 1:] = -float("inf")
         beam_scores = beam_scores.view((batch_size * num_beams,))
 
         this_peer_finished = False  # used by synced_gpus only

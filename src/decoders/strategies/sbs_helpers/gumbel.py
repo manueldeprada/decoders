@@ -33,9 +33,9 @@ def gumbel_with_maximum(phi, T, dim=-1):
     # if ((-1e9 < phi) & (phi< -100)).any():
     #     print("habemus problemus")
 
-    NEG_INF_THRESHOLD = -1e9
+    NEG_INF_THRESHOLD = -float('inf')
 
-    phi = phi.clamp(min=NEG_INF_THRESHOLD)
+    # phi = phi.clamp(min=-1e10)
     inf_rows_mask = (phi == NEG_INF_THRESHOLD).all(dim=1)
     if inf_rows_mask.any():
         old_phi = phi.clone()
@@ -59,7 +59,7 @@ def gumbel_with_maximum(phi, T, dim=-1):
 
         # Print the failed indices and corresponding values
         for ind in zip(*fail_indices):
-            print(f"Index: {ind}, g_phi value: {g_phi[ind]}, g_inv value: {g_inv[ind]}")
+            print(f"Index: {ind}, phi: {phi[ind]}, g_phi: {g_phi[ind]}, g_inv: {g_inv[ind]}")
 
         assert (((g_phi - g_inv) < 1e-3) | (g_phi == g_inv)).all()
         # | torch.isinf(g_phi).all(dim).repeat_interleave(g_phi.shape[-1], dim).view(g_phi.shape)).all()

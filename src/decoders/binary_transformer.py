@@ -1,15 +1,15 @@
-import warnings
 import numpy as np
 import torch
 from transformers import PreTrainedModel, PretrainedConfig
 from transformers.modeling_outputs import Seq2SeqLMOutput
 
+
 class BinaryCodeTransformerConfig(PretrainedConfig):
     """Configuration class with appropriate defaults for BinaryCodeTransformer."""
     model_type = "BinaryCodeTransformer"
 
-    def __init__(self, max_new_tokens, vocab_size=2, **kwargs):
-        super().__init__(pad_token_id=-5, eos_token_id=3, bos_token_id=-1, **kwargs)
+    def __init__(self, max_new_tokens=100, vocab_size=3, **kwargs):
+        super().__init__(pad_token_id=-5, eos_token_id=2, bos_token_id=-1, **kwargs)
         self.vocab_size = vocab_size
         self.max_new_tokens = max_new_tokens
         self.do_sample = True
@@ -22,12 +22,15 @@ class BinaryCodeTransformerConfig(PretrainedConfig):
 def batched_bin_vec_to_decimal(vec):
     """Convert rows with binary digits to decimal natural numbers.
     Example: tensor([[0, 1, 0, 1, 1, 0]) -> tensor([22])"""
+    if torch.all(vec[..., -1] == 2):
+        vec = vec[..., :-1]
     return torch.matmul(vec.long(), (2 ** torch.arange(vec.size(-1) - 1, -1, -1))).long()
 
 
 def decimal_to_bin_vec(num, n):
     """Convert decimal natural number to binary vector."""
-    return torch.tensor(list(map(int, bin(num)[2:].zfill(n))))
+    tensor_without_eos = torch.tensor(list(map(int, bin(num)[2:].zfill(n))))
+    return torch.cat((tensor_without_eos, torch.tensor([2])))
 
 
 def get_binary_completions(seq, max_len):
@@ -64,7 +67,7 @@ class BinaryCodeTransformer(PreTrainedModel):
         :param prob_vector: a vector of probabilities over all possible sequences,
                             indexed by their decimal representation
         """
-        config = BinaryCodeTransformerConfig(n) if config is None else config
+        config = BinaryCodeTransformerConfig() if config is None else config
         super().__init__(config)
         self.fake_param = torch.nn.Parameter(torch.tensor(1.0))  # need at least one parameter to be a valid model
         self.n = n
@@ -115,18 +118,23 @@ class BinaryCodeTransformer(PreTrainedModel):
 
         # append an extra middle dim for the vocab size
         def next_seqs(seqs):
-            expanded_t = seqs.unsqueeze(1).expand(-1, self.config.vocab_size, -1)
-            new_dim = torch.zeros(batch_size, self.config.vocab_size, 1)
+            expanded_t = seqs.unsqueeze(1).expand(-1, 2, -1)
+            new_dim = torch.zeros(batch_size, 2, 1)
             new_dim[:, 0, :] = 0
             new_dim[:, 1, :] = 1
             return torch.cat((expanded_t, new_dim), dim=2)
 
-        continuations = next_seqs(input_ids).view(batch_size * self.config.vocab_size, seq_len + 1)
-        continuations = continuations[:, 1:].unbind()
-        continuations_probs = torch.tensor([self.prob_mem[hash_seq(seq)] for seq in continuations], dtype=torch.float32)
-        # output[:, seq_len - 1, :] = continuations_probs.view(batch_size, self.config.vocab_size)
-        output = continuations_probs.view(batch_size, self.config.vocab_size).unsqueeze(1)
-
+        if input_ids.shape[1] == self.n + 1:
+            output = torch.zeros(batch_size, 1, 3)
+            output[:, 0, 2] = 1.0
+        else:
+            continuations = next_seqs(input_ids).view(batch_size * 2, seq_len + 1)
+            continuations = continuations[:, 1:].unbind()
+            continuations_probs = torch.tensor([self.prob_mem[hash_seq(seq)] for seq in continuations],
+                                               dtype=torch.float32)
+            # output[:, seq_len - 1, :] = continuations_probs.view(batch_size, self.config.vocab_size)
+            output = continuations_probs.view(batch_size, 2).unsqueeze(1)
+            output = torch.cat([output, torch.zeros(batch_size, 1, 1)], dim=-1)
         # Placeholder for past_key_values, attentions, hidden_states
         past_key_values = () if past_key_values is None else past_key_values
         attentions = () if output_attentions else None

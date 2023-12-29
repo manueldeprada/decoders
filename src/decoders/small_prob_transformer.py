@@ -41,8 +41,8 @@ class SmallProbTransformer(PreTrainedModel):
         self.SmallProb_param = torch.nn.Parameter(torch.tensor(1.0))  # need at least one parameter to be a valid model
         self.vocab_uncomplete_seqs = torch.tensor(1.0 / self.config.real_vocab_size,
                                                   device=device).repeat(self.config.vocab_size).log()
-        self.vocab_uncomplete_seqs[self.config.eos_token_id] = -1e9
-        self.vocab_finished_seqs = torch.tensor(-1e9, device=device).repeat(self.config.vocab_size)
+        self.vocab_uncomplete_seqs[self.config.eos_token_id] = -float("inf")
+        self.vocab_finished_seqs = torch.tensor(-float("inf"), device=device).repeat(self.config.vocab_size)
         self.vocab_finished_seqs[self.config.eos_token_id] = 0.0
 
     def forward(
@@ -74,9 +74,10 @@ class SmallProbTransformer(PreTrainedModel):
             # print(f"target_lens: {target_lens}")
             uncomplete_seqs = seq_len < target_lens
             # print(f"uncomplete_seqs: {uncomplete_seqs.int()}")
-            finished_seqs = uncomplete_seqs.logical_not()
-            output[:, seq_len, :] = uncomplete_seqs.unsqueeze(1) * self.vocab_uncomplete_seqs \
-                                        + finished_seqs.unsqueeze(1) * self.vocab_finished_seqs
+            mask_inf_uncomplete = uncomplete_seqs.unsqueeze(1) * self.vocab_uncomplete_seqs
+            mask_inf_finished = uncomplete_seqs.logical_not().unsqueeze(1) * self.vocab_finished_seqs
+            result = torch.where(uncomplete_seqs.unsqueeze(1), mask_inf_uncomplete, mask_inf_finished)
+            output[:, seq_len, :] = result
         else:
             output[:, 0, :] = self.vocab_uncomplete_seqs
 
@@ -127,54 +128,3 @@ class SmallProbTokenizer(PreTrainedTokenizer):
 
     def batch_decode(self, token_ids, **kwargs):
         return [str(ids) for ids in token_ids]
-
-
-if __name__ == "__main__":
-    from decoders.strategies.sbs_helpers.logits_process import LogitsProcessorList, TemperatureLogitsWarper
-    from decoders import inject_supervitamined_decoders, StochasticBeamSearchDecoder, toolbox
-    config = SmallProbTransformerConfig()
-    model = SmallProbTransformer(config)
-    inject_supervitamined_decoders(model)
-
-    input_ids = torch.tensor([[-2]])  # for sampling and on cpu, this is faster than num_return_sequences
-    output = model.generate(input_ids,
-                            generation_strategy=StochasticBeamSearchDecoder(), num_beams=100, num_return_sequences=100,
-                            length_penalty=0.0,
-                            early_stopping=True,
-                            #logits_processor=LogitsProcessorList([TemperatureLogitsWarper(temperature=0.0001)]),
-                            #num_beams=1,
-                            do_sample=False, return_dict_in_generate=True,
-                            output_scores=True)
-    # print(f"generated tokens: {output.sequences}")
-    # print(f"routes: {output.sequences[:, 1]}")
-    routes_freq = output.sequences[:, 1].bincount(minlength=config.real_vocab_size)
-    print(f"routes freq: {routes_freq}, total: {routes_freq.sum()}")
-    r_lens = route2length(output.sequences[:, 1])
-
-    for i in range(0,10):
-        print(f"Route {i}, len {route2length(i)}, freq {routes_freq[i]}")
-
-        route_i_seqs = output.sequences[:, 1] == i
-        if i==0:
-            print(output.sequences[route_i_seqs, :][0:10])
-        computed_probs = model.compute_transition_scores(sequences=output.sequences, scores=output.scores,
-                                                         normalize_logits=True, beam_indices=output.beam_indices)
-        gen_probs = output.sequences_scores
-        print(f"probs (generate): {gen_probs[route_i_seqs].mean()}")
-        print(f"probs (computed): {computed_probs[route_i_seqs, :].sum(dim=1).mean()}")
-        own_probs = toolbox.compute_true_logprobs(model, output.sequences)
-        print(f"probs (own): {own_probs[route_i_seqs].mean()}")
-
-
-    # print(f"probs at step 1: {torch.exp(output.scores[0][0, :])}")
-    # print(f"probs at step 2: {torch.exp(output.scores[1][0, :])}")
-    # print(f"probs at step 3: {torch.exp(output.scores[2][0, :])}")
-
-    #lets estimate f with monte carlo
-    true_f = f_experiment(torch.tensor([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]).double()).sum()/10
-    print(f"true f: {true_f}")
-    f_mc = f_experiment(output.sequences[:, 1].double()).mean()
-    print(f"estimated f: {f_mc}")
-    error = (f_mc - true_f).abs()
-    print(f"error: {error}, relative error: {error / true_f}")
-

@@ -1,11 +1,8 @@
-# test_binary_code_transformer.py
-
 import torch
 import numpy as np
 import pytest
 from decoders import BinaryCodeTransformer, BinaryCodeTransformerConfig  # Adjust the import according to your module structure
 
-# If you have common setup code, you can use pytest fixtures
 @pytest.fixture
 def setup_model():
     torch.manual_seed(0)
@@ -57,6 +54,7 @@ def test_binary_code_transformer_scores(setup_model):
     
     assert torch.allclose(output.scores[5], expected_scores), "output.scores[5] does not match expected values"
 
-# Finally, you can have a function that can be called if you want to run all tests manually
+
 if __name__ == "__main__":
-    pytest.main()
+    from arsenal import testing_framework
+    testing_framework(globals())

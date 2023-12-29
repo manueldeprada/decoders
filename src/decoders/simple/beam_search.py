@@ -1,27 +1,13 @@
 from typing import Optional, Union, TYPE_CHECKING
-
 import torch
-
-from transformers.generation.configuration_utils import GenerationConfig
-from transformers.generation.logits_process import LogitsProcessorList
-from transformers.generation.stopping_criteria import StoppingCriteriaList
-
-from .simple_beam_utils import SimpleBeamSearch, BeamSearchNode, pad_tensors, separate_encoder_states
-from ..strategies.utils import GenerationStrategy, SampleEncoderDecoderOutput
+from transformers import GenerationConfig, StoppingCriteriaList
+from .simple_beam_utils import SimpleBeamSearch, BeamSearchNode, pad_tensors, separate_model_states, \
+    collate_model_states, update_model_kv_cache
+from ..strategies.sbs_helpers.logits_process import LogitsProcessorList
+from ..strategies.utils import GenerationStrategy, BeamSearchDecoderOnlyOutput
 
 if TYPE_CHECKING:
     from transformers.modeling_utils import PreTrainedModel, GenerationMixin
-
-
-def collate_encoder_states(encoder_states):
-    new_dict = encoder_states[0].copy()
-    for key in encoder_states[0]:
-        if encoder_states[0][key] is not None and isinstance(encoder_states[0][key], torch.Tensor):
-            new_dict[key] = torch.stack([encoder_states[i][key].squeeze() for i in range(len(encoder_states))], dim=0)
-    if encoder_states[0].get("encoder_outputs") is not None:
-        new_dict["encoder_outputs"] = collate_encoder_states(
-            [encoder_states[i]["encoder_outputs"] for i in range(len(encoder_states))])
-    return new_dict
 
 
 class BeamSearchDecoder(GenerationStrategy):
@@ -38,11 +24,12 @@ class BeamSearchDecoder(GenerationStrategy):
                  input_ids: torch.LongTensor,
                  logits_processor: Optional[LogitsProcessorList] = None,
                  stopping_criteria: Optional[StoppingCriteriaList] = None,
+                 keep_k_always_alive: Optional[int] = False,
+                 eval_by_score: Optional[bool] = False,
                  **model_kwargs,
                  ):
         r"""
-        Simple implementation of Beam Search. May use logit sequences of token ids for models with a language modeling head using **multinomial sampling** and
-        can be used for text-decoder, text-to-text, speech-to-text, and vision-to-text models.
+        Simple implementation of Beam Search.
 
         Parameters:
             input_ids (`torch.LongTensor` of shape `(batch_size, sequence_length)`):
@@ -53,8 +40,9 @@ class BeamSearchDecoder(GenerationStrategy):
             stopping_criteria (`StoppingCriteriaList`, *optional*):
                 An instance of [`StoppingCriteriaList`]. List of instances of class derived from [`StoppingCriteria`]
                 used to tell if the generation loop should stop.
-            num_beams (`int`, *optional*, defaults to 5):
-                Number of beams to use for generation.
+            keep_k_always_alive (`int`, *optional*, defaults to `False`):
+                If set to `True`, always keep at least `num_beams` hypotheses alive, irrespective of number
+                of finished hypotheses.
             model_kwargs:
                 Additional model specific kwargs will be forwarded to the `forward` function of the model. If model is
                 an encoder-decoder model the kwargs should include `encoder_outputs`.
@@ -64,113 +52,96 @@ class BeamSearchDecoder(GenerationStrategy):
         """
 
         # init values
-        logits_processor = logits_processor if logits_processor is not None else LogitsProcessorList()
+        logits_processor = LogitsProcessorList(
+            logits_processor) if logits_processor is not None else LogitsProcessorList()
         stopping_criteria = stopping_criteria if stopping_criteria is not None else StoppingCriteriaList()
 
         batch_size, _ = input_ids.shape
         num_beams = self.config.num_beams
+        vocab_size = model.config.vocab_size
 
-        print(f"Running simple beam search. batch: {input_ids.shape[0]}, num_beams: {num_beams}, "
-              f"logit_processor: {logits_processor}, stopping_criteria: {stopping_criteria}, ")
-
-        searches = [SimpleBeamSearch(num_beams, model.config.eos_token_id) for _ in range(batch_size)]
-        encoder_states = separate_encoder_states(batch_size, model.config.is_encoder_decoder, **model_kwargs)
+        # 0. Initialize beam searches, one for each sequence in the batch
+        searches = [SimpleBeamSearch(num_beams, model.config.eos_token_id, eval_by_score) for _ in range(batch_size)]
 
         # 1. Generate initial hypotheses
         model_inputs = model.prepare_inputs_for_generation(input_ids, **model_kwargs)
         outputs = model(**model_inputs, return_dict=True)
-        log_probs, next_candidates = torch.topk(torch.log_softmax(outputs.logits[:, -1, :], dim=-1), 2 * num_beams)
+        model_kwargs = model._update_model_kwargs_for_generation(outputs, model_kwargs,
+                                                                 is_encoder_decoder=model.config.is_encoder_decoder)
+        model_states = separate_model_states(batch_size, model.config.is_encoder_decoder, **model_kwargs)
+
+        logits = outputs.logits[:, -1, :].log_softmax(dim=-1)
+        scores = logits_processor(input_ids, logits, nodes=None)
+        assert scores.shape[1] == vocab_size, f"{scores.shape[1]} != {vocab_size}"
+        scores, next_candidates = torch.topk(scores, min(num_beams, vocab_size))  # (batch_size, num_beams)
+        log_probs = torch.gather(logits, -1, next_candidates)  # order by scores, store true log probs
+
+        # 1.1. Add initial hypotheses to the beam searches
         for b_idx in range(batch_size):
-            for j in range(num_beams):
+            for j in range(min(num_beams, vocab_size)):
                 next_token = next_candidates[b_idx, j]
                 new_seq = torch.cat((input_ids[b_idx], next_token.unsqueeze(0)))
-                node = BeamSearchNode(searches[b_idx], new_seq, log_probs[b_idx, j], encoder_states[b_idx])
+                node = BeamSearchNode(searches[b_idx], new_seq, model_states[b_idx], log_probs[b_idx, j],
+                                      scores[b_idx, j])
                 searches[b_idx].add(node, finished=(next_token == model.config.eos_token_id))
 
         # 2. Beam search generation loop
         while True:
-            # Get the current nodes to expand
+            # 2.1 Pop the current nodes to expand
             nodes = [n for s in searches for n in s.get_current_beams()]
             if len(nodes) == 0:
                 break  # All beams ended in EOS
+
+            # 2.2 Expand nodes, get top `num_beams` candidates
             input_ids = pad_tensors([node.sequence for node in nodes], model.config.pad_token_id)
             input_ids = torch.stack(input_ids, dim=0)
-            new_model_kwargs = collate_encoder_states([node.encoder_state for node in nodes])
-            model_inputs = model.prepare_inputs_for_generation(input_ids, **new_model_kwargs)
+            model_args = collate_model_states([node.model_state for node in nodes])
+            model_inputs = model.prepare_inputs_for_generation(input_ids, **model_args)
             outputs = model(**model_inputs, return_dict=True)
 
-            logits = outputs.logits[:, -1, :]
-            log_probs, next_candidates = torch.topk(torch.log_softmax(logits, dim=-1),
-                                                    2 * num_beams)  # (batch_size, 2 * num_beams)
+            logits = outputs.logits[:, -1, :].log_softmax(dim=-1)
+            scores = logits_processor(input_ids, logits, nodes=nodes)
+            scores, next_candidates = torch.topk(scores, min(num_beams, vocab_size))  # (batch_size, num_beams)
+            log_probs = torch.gather(logits, -1, next_candidates)  # order by scores, store true log probs
 
-            for b_idx in range(log_probs.shape[0]):
-                for j in range(num_beams):
-                    next_token = next_candidates[b_idx, j]
-                    beam_log_p = nodes[b_idx].log_p + log_probs[b_idx, j]
-                    new_seq = torch.cat((input_ids[b_idx], next_token.unsqueeze(0)))
-                    node = BeamSearchNode(nodes[b_idx].search, new_seq, beam_log_p, nodes[b_idx].encoder_state)
-                    node.search.add(node, finished=(next_token == model.config.eos_token_id))
+            # 2.3 Push new candidates to the beam searches
+            for n_idx, node in enumerate(nodes):
+                model_state = update_model_kv_cache(node.model_state, n_idx, outputs)
+                for j in range(min(num_beams, vocab_size)):
+                    next_token = next_candidates[n_idx, j]
+                    beam_log_p = node.log_prob + log_probs[n_idx, j]
+                    new_seq = torch.cat((input_ids[n_idx], next_token.unsqueeze(0)))
+                    new_node = BeamSearchNode(node.search, new_seq, model_state, beam_log_p, scores[n_idx, j])
+                    new_node.search.add(new_node, finished=(next_token == model.config.eos_token_id))
 
+            # 2.4 Prune and check stopping criteria
             for search in searches:
-                search.prune()
+                search.prune(keep_k_always_alive=keep_k_always_alive)
 
             if stopping_criteria(input_ids, None):
                 break
 
+            # rationale: if we always keep k non-eos beams alive, generation only stops by max_length
+            # instead, with this heuristic, we mimic HF's early stopping: when we have k finished hypotheses, we allow
+            # one more round of expansion to allow for EOS to be generated in alive beams.
+            # THIS A HEURISTIC to test against HF's implementation. keep_k_always_alive should be False for correctness.
+            if keep_k_always_alive and all([search.is_done() for search in searches]):
+                keep_k_always_alive = False
         # 3. Return best hypotheses
         best_sents = []
-        best_scores = []
+        best_log_probs = []
+        last_scores = []
         for search in searches:
-            for node in search.get_best(self.config.num_return_sequences):
+            for node in search.final_best_n(self.config.num_return_sequences):
                 best_sents.append(node.sequence.cpu())
-                best_scores.append(node.log_p.cpu().item())
+                best_log_probs.append(node.log_prob.cpu().item())
+                last_scores.append(node.last_score.cpu().item())
 
         best_sents = torch.stack(pad_tensors(best_sents, model.config.pad_token_id), dim=0)
-        best_scores = torch.tensor(best_scores)
-        return SampleEncoderDecoderOutput(
+        best_log_probs = torch.tensor(best_log_probs)
+        last_scores = torch.tensor(last_scores)
+        return BeamSearchDecoderOnlyOutput(
             sequences=best_sents,
-            # scores=best_scores,
-            sequences_scores=best_scores,
+            last_scores=last_scores,
+            sequences_scores=best_log_probs,
         )
-
-
-if __name__ == "__main__":
-    from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
-    from ..__init__ import inject_supervitamined_decoders
-
-    tokenizer = AutoTokenizer.from_pretrained("t5-small")
-    model = AutoModelForSeq2SeqLM.from_pretrained("t5-small")
-    model.eval()
-    inject_supervitamined_decoders(model)
-    inputs = tokenizer([  # "translate English to German: What is your name, my dear Friend? I missed you so much",
-                          # "translate English to German: How old are you?",
-                        # "a b c 1 2 ",
-                        "summarize: Lorem ipsum dolor "
-                    ],
-                        return_tensors="pt", padding=True, truncation=True
-                    )
-    outputs = model.generate(**inputs,
-                             generation_strategy=BeamSearchDecoder(),
-                             generation_config=GenerationConfig(max_new_tokens=100, num_beams=5,
-                                                                num_return_sequences=5))
-
-    standard_seqs = model.generate(**inputs,
-                                   # decoder_input_ids = torch.tensor([[    0,  8410,    15,    51,     3, 15432,   440,   103,   322,    19, 3,     9,  1144,    13]]),
-                                   num_beams=5, do_sample=0, max_new_tokens=100, length_penalty=0.0,
-                                   early_stopping=True, return_dict_in_generate=True, output_scores=True,
-                                   num_return_sequences=5)
-
-    # assert torch.all(outputs.sequences == standard_seqs), f"output: {outputs.sequences}, gold: {standard_seqs}"
-    print(f"standard:\n{standard_seqs.sequences}")
-    print(f"output:\n{outputs.sequences}")
-    for i in standard_seqs.sequences:
-        print(list(tokenizer.convert_ids_to_tokens(i)))
-    print("outputs:")
-    for i in outputs.sequences:
-        print(list(tokenizer.convert_ids_to_tokens(i)))
-    # print(f"generated text: {tokenizer.batch_decode(outputs.sequences, skip_special_tokens=True)}")
-    # print(f"generated tokens: {outputs.sequences}")
-    print(f"standard logp: {standard_seqs.sequences_scores}")
-    print(f"generated logp: {outputs.sequences_scores}")
-    # _, recompute_logp = compute_true_logprobs(model, outputs.sequences, encoder_input=inputs)
-    # print(f"true logp: {recompute_logp.sum(dim=1)}")
