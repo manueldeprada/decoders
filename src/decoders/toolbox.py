@@ -30,6 +30,8 @@ def compute_true_logprobs(model, sequences, encoder_input=None):
         model_kwargs = model._prepare_encoder_decoder_kwargs_for_generation(
             encoder_input, model_kwargs, model_input_name
         )
+        _, model_kwargs = model._expand_inputs_for_generation(sequences.shape[0] // encoder_input.shape[0],
+                                                              is_encoder_decoder=True, **model_kwargs)
 
     device = sequences.device
     if len(sequences.shape) == 1:

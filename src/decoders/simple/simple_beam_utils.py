@@ -98,7 +98,7 @@ class SimpleBeamSearch(object):
         best_alive_score = best_alive.eval() if best_alive is not None else float("-inf")
         best_final_score = best_final.eval() if best_final is not None else float("-inf")
         if best_alive is None and best_final is None:
-            return None
+            return None, None
         if (best_alive is None) or (best_alive_score < best_final_score):
             return self.final_nodes.get(), True
         else:
@@ -110,6 +110,8 @@ class SimpleBeamSearch(object):
         new_nodes_final = BSPriorityQueue()
         for _ in range(self.beam_size): #TODO: this can be optimized by discarding worse-than-worst nodes on the go
             node, is_final = self.get_best_node()
+            if node is None:
+                break
             if not is_final:
                 new_nodes_active.put(node)
             else:

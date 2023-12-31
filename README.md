@@ -24,16 +24,17 @@ model.generate(...)
 This decoder is a stochastic version of the Beam Search decoder. It is a HF implementation of the paper [Stochastic Beam Search](https://arxiv.org/abs/1903.06059).
 
 It can be used as follows:
+
 ```python
-from decoders import StochasticBeamSearchDecoder, inject_supervitamined_decoders
+from decoders import OldStochasticBeamSearchDecoder, inject_supervitamined_decoders
 from transformers import T5ForConditionalGeneration
 
 model = T5ForConditionalGeneration.from_pretrained('t5-small')
 inject_supervitamined_decoders(model)
 
-decoder = StochasticBeamSearchDecoder()
-outputs = model.generate(input_ids, generation_strategy=decoder, 
-                         num_beams=4, num_return_sequences=4, # sample without repl. = return all beams
+decoder = OldStochasticBeamSearchDecoder()
+outputs = model.generate(input_ids, generation_strategy=decoder,
+                         num_beams=4, num_return_sequences=4,  # sample without repl. = return all beams
                          length_penalty=0.0,  # for correct probabilities, disable length penalty
                          return_dict_in_generate=True, output_scores=True, early_stopping=True,
                          # early stopping because without length penalty, we can discard worse sequences

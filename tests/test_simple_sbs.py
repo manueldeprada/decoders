@@ -1,18 +1,14 @@
-from decoders.simple.beam_search import BeamSearchDecoder
-from decoders.simple.stochastic_beam_search import SimpleSBSLogitProcessor, SimpleStochasticBeamSearchDecoder
 from decoders import inject_supervitamined_decoders, SmallProbTransformer, SmallProbTransformerConfig, \
-    BinaryCodeTransformer
+    BinaryCodeTransformer, BeamSearchDecoder, StochasticBeamSearchDecoder, SimpleSBSLogitProcessor, LogitsProcessorList
 from transformers import GenerationConfig, AutoTokenizer, AutoModelForSeq2SeqLM
 
-from decoders.strategies.sbs_helpers.logits_process import LogitsProcessorList
 
-
-def test_simple_bs_quick():
-    inputs = ["a b c 1 2 ", "translate English to German: How old are you?"]
+def test_simple_bs_single():
+    inputs = ["translate English to German: How old are you?"]
     _test_simple_sbs(inputs)
 
 
-def test_simple_bs_full():
+def test_simple_bs_batch():
     inputs = ["translate English to German: What is your name, my dear Friend? I missed you so much",
         "translate English to German: How old are you?",
         "a b c 1 2 ",
@@ -41,38 +37,41 @@ def _test_simple_sbs(inputs):
     print(f"generated probs: {outputs.sequences_scores}")
     print(f"generated gumbels: {outputs.last_scores}")
 
+
 def test_binary_transformer():
     import torch
-    inputs = torch.tensor([[-1]]*2)
+    inputs = torch.tensor([[-1]] * 2)
     model = BinaryCodeTransformer(n=6)
     inject_supervitamined_decoders(model)
     output = model.generate(inputs,
-                     generation_strategy=SimpleStochasticBeamSearchDecoder(),
-                     num_beams=100,
-                     num_return_sequences=100,
-                     max_new_tokens=100,
-                     eval_by_score=True,
-                     )
+                            generation_strategy=StochasticBeamSearchDecoder(),
+                            num_beams=100,
+                            num_return_sequences=100,
+                            max_new_tokens=100,
+                            eval_by_score=True,
+                            )
     print(f"generated seqs: {output.sequences}")
     print(f"generated probs: {output.sequences_scores}")
     print(f"generated gumbels: {output.last_scores}")
 
+
 def test_small_prob_transformer():
     import torch
     torch.manual_seed(43)
-    inputs = torch.tensor([[-2]]*2)
+    inputs = torch.tensor([[-2]] * 2)
     model = SmallProbTransformer(SmallProbTransformerConfig())
     inject_supervitamined_decoders(model)
     output = model.generate(inputs,
-                   generation_strategy=BeamSearchDecoder(),
-                   generation_config=GenerationConfig(max_new_tokens=200, num_beams=100, num_return_sequences=100),
-                   logits_processor=LogitsProcessorList([SimpleSBSLogitProcessor()]),
-                   eval_by_score=True,
-                   )
+                            generation_strategy=BeamSearchDecoder(),
+                            generation_config=GenerationConfig(max_new_tokens=200, num_beams=100,
+                                                               num_return_sequences=100),
+                            logits_processor=LogitsProcessorList([SimpleSBSLogitProcessor()]),
+                            eval_by_score=True,
+                            )
     print(f"generated seqs: {output.sequences}")
     print(f"generated gumbels: {output.last_scores}")
     print(f"generated probs: {output.sequences_scores}")
-    routes = output.sequences[:,1]
+    routes = output.sequences[:, 1]
     print(f"routes: {routes}")
     print(f"bins: {routes.bincount(minlength=9)}")
 

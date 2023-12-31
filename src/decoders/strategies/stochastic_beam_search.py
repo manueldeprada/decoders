@@ -35,7 +35,7 @@ if TYPE_CHECKING:
     from transformers.generation.streamers import BaseStreamer
 
 
-class SBSLogitProcessor(LogitsProcessor):
+class OldSBSLogitProcessor(LogitsProcessor):
 
     def __init__(self, num_beams, batch_size=2):
         self.num_beams = num_beams
@@ -78,7 +78,7 @@ class SBSLogitProcessor(LogitsProcessor):
         return new_gumbels
 
 
-class StochasticBeamSearchDecoder(GenerationStrategy):
+class OldStochasticBeamSearchDecoder(GenerationStrategy):
     """
     Implements beam search decoding method.
     """
@@ -247,13 +247,13 @@ class StochasticBeamSearchDecoder(GenerationStrategy):
             )
         if logits_processor is not None:
             logits_processor = LogitsProcessorList(logits_processor)
-            if any(isinstance(p, SBSLogitProcessor) for p in logits_processor):
+            if any(isinstance(p, OldSBSLogitProcessor) for p in logits_processor):
                 pass
             else:
-                logits_processor.append(SBSLogitProcessor(num_beams=self.config.num_beams, batch_size=input_ids.shape[0]))
+                logits_processor.append(OldSBSLogitProcessor(num_beams=self.config.num_beams, batch_size=input_ids.shape[0]))
         else:
-            logits_processor = LogitsProcessorList([SBSLogitProcessor(num_beams=self.config.num_beams,
-                                                                      batch_size=input_ids.shape[0])])
+            logits_processor = LogitsProcessorList([OldSBSLogitProcessor(num_beams=self.config.num_beams,
+                                                                         batch_size=input_ids.shape[0])])
 
         if self.check_config:
             if self.config.num_return_sequences > self.config.num_beams:

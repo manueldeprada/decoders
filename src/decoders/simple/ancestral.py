@@ -1,11 +1,6 @@
 from typing import Optional, Union, TYPE_CHECKING
-
 import torch
-from torch import nn
-
-from transformers.generation.configuration_utils import GenerationConfig
-from transformers.generation.logits_process import LogitsProcessorList
-from transformers.generation.stopping_criteria import StoppingCriteriaList
+from transformers import GenerationConfig, StoppingCriteriaList, LogitsProcessorList
 
 from ..strategies.utils import GenerationStrategy, SampleEncoderDecoderOutput
 
@@ -91,7 +86,7 @@ class SamplingDecoder(GenerationStrategy):
 
             if scores is not None:
                 scores += (next_token_scores,)
-            probs = nn.functional.softmax(next_token_scores, dim=-1)
+            probs = next_token_scores.softmax(dim=-1)
             next_tokens = torch.multinomial(probs, num_samples=1).squeeze(1) #todo: test and replace this with gumbel sampling
             next_token_logprobs = next_token_scores.log_softmax(dim=-1).gather(dim=-1, index=next_tokens.unsqueeze(-1)).squeeze(-1)
             # next_token_logprobs = torch.where(~finished, next_token_logprobs, torch.zeros_like(next_token_logprobs))

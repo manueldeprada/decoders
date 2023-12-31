@@ -39,7 +39,7 @@ class SimpleSBSLogitProcessor(LogitsProcessor):
         return new_gumbels
 
 
-class SimpleStochasticBeamSearchDecoder(BeamSearchDecoder):
+class StochasticBeamSearchDecoder(BeamSearchDecoder):
 
     def __call__(self,
                  model: Union["PreTrainedModel", "GenerationMixin"],
