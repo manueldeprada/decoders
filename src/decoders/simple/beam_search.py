@@ -50,10 +50,11 @@ class BeamSearchDecoder(GenerationStrategy):
         Return:
             [`~generation.SampleDecoderOnlyOutput`] or [`~generation.SampleEncoderDecoderOutput`].
         """
+        from .stochastic_beam_search import SimpleSBSLogitProcessor
+        if logits_processor is not None and any(isinstance(p, SimpleSBSLogitProcessor) for p in logits_processor) and not eval_by_score:
+            print("WARNING: SimpleSBSLogitProcessor is used but eval_by_score is False.")
 
-        # init values
-        logits_processor = LogitsProcessorList(
-            logits_processor) if logits_processor is not None else LogitsProcessorList()
+        logits_processor = LogitsProcessorList(logits_processor) if logits_processor is not None else LogitsProcessorList()
         stopping_criteria = stopping_criteria if stopping_criteria is not None else StoppingCriteriaList()
 
         batch_size, _ = input_ids.shape
@@ -72,7 +73,6 @@ class BeamSearchDecoder(GenerationStrategy):
 
         logits = outputs.logits[:, -1, :].log_softmax(dim=-1)
         scores = logits_processor(input_ids, logits, nodes=None)
-        assert scores.shape[1] == vocab_size, f"{scores.shape[1]} != {vocab_size}"
         scores, next_candidates = torch.topk(scores, min(num_beams, vocab_size))  # (batch_size, num_beams)
         log_probs = torch.gather(logits, -1, next_candidates)  # order by scores, store true log probs
 

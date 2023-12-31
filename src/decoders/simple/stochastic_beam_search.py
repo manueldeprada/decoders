@@ -47,7 +47,7 @@ class StochasticBeamSearchDecoder(BeamSearchDecoder):
                  logits_processor: Optional[LogitsProcessorList] = None,
                  stopping_criteria: Optional[StoppingCriteriaList] = None,
                  keep_k_always_alive: Optional[int] = False,
-                 eval_by_score: Optional[bool] = False,
+                 eval_by_score: Optional[bool] = True,
                  **model_kwargs,
                  ):
         r"""

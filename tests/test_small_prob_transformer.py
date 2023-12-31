@@ -1,10 +1,6 @@
 import torch
-from transformers import GenerationConfig
-from decoders import inject_supervitamined_decoders, OldStochasticBeamSearchDecoder, toolbox, SmallProbTransformer, \
-    SmallProbTransformerConfig, SamplingDecoder
+from decoders import inject_supervitamined_decoders, SmallProbTransformer, SmallProbTransformerConfig, SamplingDecoder
 
-type_t = torch.float64
-torch.set_default_dtype(type_t)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 config = SmallProbTransformerConfig()
@@ -17,7 +13,7 @@ def test_ancestral_sample():
     input_ids = torch.tensor([[-1]]).to(device)
     output = model.generate(input_ids,
                             generation_strategy=SamplingDecoder(),
-                            generation_config=GenerationConfig(max_new_tokens=200, top_k=0, do_sample=True),
+                            max_new_tokens=200, top_k=0, do_sample=True,
                             num_return_sequences=20, )
     routes = output.sequences[:, 1]
     bins = routes.bincount(minlength=config.real_vocab_size)

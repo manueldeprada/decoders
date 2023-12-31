@@ -1,5 +1,5 @@
 import torch
-from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, GenerationConfig, NoBadWordsLogitsProcessor
+from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, NoBadWordsLogitsProcessor
 from decoders import inject_supervitamined_decoders, BeamSearchDecoder, LogitsProcessorList
 import time
 
@@ -28,7 +28,7 @@ def _test_simple_beam_search(inputs):
     t0 = time.time()
     outputs = model.generate(**inputs,
                              generation_strategy=BeamSearchDecoder(),
-                             generation_config=GenerationConfig(max_new_tokens=100, num_beams=5),
+                             max_new_tokens=100, num_beams=5,
                              keep_k_always_alive=True,
                              )
     t1 = time.time()
@@ -54,7 +54,7 @@ def test_logit_processor():
                        )
     outputs = model.generate(**inputs,
                              generation_strategy=BeamSearchDecoder(),
-                             generation_config=GenerationConfig(max_new_tokens=100, num_beams=5),
+                             max_new_tokens=100, num_beams=5,
                              logits_processor=LogitsProcessorList(
                                  [NoBadWordsLogitsProcessor(bad_words_ids=[[292]], eos_token_id=1)]),
                              keep_k_always_alive=False)

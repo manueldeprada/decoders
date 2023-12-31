@@ -1,6 +1,6 @@
 from decoders import inject_supervitamined_decoders, SmallProbTransformer, SmallProbTransformerConfig, \
-    BinaryCodeTransformer, BeamSearchDecoder, StochasticBeamSearchDecoder, SimpleSBSLogitProcessor, LogitsProcessorList
-from transformers import GenerationConfig, AutoTokenizer, AutoModelForSeq2SeqLM
+    BinaryCodeTransformer, StochasticBeamSearchDecoder
+from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
 
 
 def test_simple_bs_single():
@@ -26,11 +26,8 @@ def _test_simple_sbs(inputs):
                        return_tensors="pt", padding=True, truncation=True
                        )
     outputs = model.generate(**inputs,
-                             generation_strategy=BeamSearchDecoder(),
-                             generation_config=GenerationConfig(max_new_tokens=100, num_beams=5,
-                                                                num_return_sequences=5),
-                             logits_processor=LogitsProcessorList([SimpleSBSLogitProcessor()]),
-                             eval_by_score=True,
+                             generation_strategy=StochasticBeamSearchDecoder(),
+                             max_new_tokens=100, num_beams=5, num_return_sequences=5,
                              )
 
     print(f"generated text: {tokenizer.batch_decode(outputs.sequences, skip_special_tokens=True)}")
@@ -48,7 +45,6 @@ def test_binary_transformer():
                             num_beams=100,
                             num_return_sequences=100,
                             max_new_tokens=100,
-                            eval_by_score=True,
                             )
     print(f"generated seqs: {output.sequences}")
     print(f"generated probs: {output.sequences_scores}")
@@ -62,10 +58,8 @@ def test_small_prob_transformer():
     model = SmallProbTransformer(SmallProbTransformerConfig())
     inject_supervitamined_decoders(model)
     output = model.generate(inputs,
-                            generation_strategy=BeamSearchDecoder(),
-                            generation_config=GenerationConfig(max_new_tokens=200, num_beams=100,
-                                                               num_return_sequences=100),
-                            logits_processor=LogitsProcessorList([SimpleSBSLogitProcessor()]),
+                            generation_strategy=StochasticBeamSearchDecoder(),
+                            max_new_tokens=200, num_beams=100, num_return_sequences=100,
                             eval_by_score=True,
                             )
     print(f"generated seqs: {output.sequences}")
@@ -84,8 +78,8 @@ if __name__ == '__main__':
         return hasattr(sys, 'gettrace') and sys.gettrace() is not None
 
     if debugger_is_active():
-        test_binary_transformer()
-        # test_small_prob_transformer()
+        # test_binary_transformer()
+        test_small_prob_transformer()
     else:
         from arsenal import testing_framework
         testing_framework(globals())
