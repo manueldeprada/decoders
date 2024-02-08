@@ -22,9 +22,7 @@ def _test_simple_beam_search(inputs):
     tokenizer = AutoTokenizer.from_pretrained("t5-small")
     model = AutoModelForSeq2SeqLM.from_pretrained("t5-small")
     inject_supervitamined_decoders(model)
-    inputs = tokenizer(inputs,
-                       return_tensors="pt", padding=True, truncation=True
-                       )
+    inputs = tokenizer(inputs, return_tensors="pt", padding=True, truncation=True)
     t0 = time.time()
     outputs = model.generate(**inputs,
                              generation_strategy=BeamSearchDecoder(),
@@ -86,4 +84,5 @@ def test_en_pt_model():
 
 if __name__ == '__main__':
     from arsenal import testing_framework
+
     testing_framework(globals())

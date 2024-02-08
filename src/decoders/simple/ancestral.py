@@ -23,6 +23,7 @@ class SamplingDecoder(GenerationStrategy):
                  logits_processor: Optional[LogitsProcessorList] = None,
                  logits_warper: Optional[LogitsProcessorList] = None,
                  stopping_criteria: Optional[StoppingCriteriaList] = None,
+                 quiet: Optional[bool] = True,
                  **model_kwargs,
                  ):
         r"""
@@ -70,9 +71,10 @@ class SamplingDecoder(GenerationStrategy):
         sequences_logscores = torch.zeros(input_ids.shape[0], device=input_ids.device)
         finished = torch.zeros(input_ids.shape[0], device=input_ids.device, dtype=torch.bool)
 
-        print(f"Running simple ancestral sampling. Batch Size: {input_ids.shape[0]}, "
-              f"logit_processor: {logits_processor}, stopping_criteria: {stopping_criteria}, "
-              f"logits_warper: {logits_warper}")
+        if not quiet:
+            print(f"Running simple ancestral sampling. Batch Size: {input_ids.shape[0]}, "
+                  f"logit_processor: {logits_processor}, stopping_criteria: {stopping_criteria}, "
+                  f"logits_warper: {logits_warper}")
         while True:
             model_inputs = model.prepare_inputs_for_generation(input_ids, **model_kwargs)
             outputs = model(

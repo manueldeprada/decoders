@@ -25,6 +25,7 @@ class BeamSearchDecoder(GenerationStrategy):
                  logits_processor: Optional[LogitsProcessorList] = None,
                  stopping_criteria: Optional[StoppingCriteriaList] = None,
                  keep_k_always_alive: Optional[int] = False,
+                 disable_kv_cache: Optional[bool] = False,
                  eval_by_score: Optional[bool] = False,
                  **model_kwargs,
                  ):
@@ -69,7 +70,7 @@ class BeamSearchDecoder(GenerationStrategy):
         outputs = model(**model_inputs, return_dict=True)
         model_kwargs = model._update_model_kwargs_for_generation(outputs, model_kwargs,
                                                                  is_encoder_decoder=model.config.is_encoder_decoder)
-        model_states = separate_model_states(batch_size, model.config.is_encoder_decoder, **model_kwargs)
+        model_states = separate_model_states(batch_size, model.config.is_encoder_decoder, disable_kv_cache, **model_kwargs)
 
         logits = outputs.logits[:, -1, :].log_softmax(dim=-1)
         scores = logits_processor(input_ids, logits, nodes=None)
@@ -95,7 +96,7 @@ class BeamSearchDecoder(GenerationStrategy):
             # 2.2 Expand nodes, get top `num_beams` candidates
             input_ids = pad_tensors([node.sequence for node in nodes], model.config.pad_token_id)
             input_ids = torch.stack(input_ids, dim=0)
-            model_args = collate_model_states([node.model_state for node in nodes])
+            model_args = collate_model_states([node.model_state for node in nodes], disable_kv_cache=disable_kv_cache)
             model_inputs = model.prepare_inputs_for_generation(input_ids, **model_args)
             outputs = model(**model_inputs, return_dict=True)
 
@@ -106,7 +107,7 @@ class BeamSearchDecoder(GenerationStrategy):
 
             # 2.3 Push new candidates to the beam searches
             for n_idx, node in enumerate(nodes):
-                model_state = update_model_kv_cache(node.model_state, n_idx, outputs)
+                model_state = update_model_kv_cache(node.model_state, n_idx, outputs, disable_kv_cache)
                 for j in range(min(num_beams, vocab_size)):
                     next_token = next_candidates[n_idx, j]
                     beam_log_p = node.log_prob + log_probs[n_idx, j]

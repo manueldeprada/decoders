@@ -47,6 +47,7 @@ class StochasticBeamSearchDecoder(BeamSearchDecoder):
                  logits_processor: Optional[LogitsProcessorList] = None,
                  stopping_criteria: Optional[StoppingCriteriaList] = None,
                  keep_k_always_alive: Optional[int] = False,
+                 disable_kv_cache: Optional[bool] = False,
                  eval_by_score: Optional[bool] = True,
                  **model_kwargs,
                  ):
@@ -62,4 +63,4 @@ class StochasticBeamSearchDecoder(BeamSearchDecoder):
         else:
             logits_processor = LogitsProcessorList([SimpleSBSLogitProcessor()])
         return super().__call__(model, input_ids, logits_processor, stopping_criteria, keep_k_always_alive,
-                                eval_by_score, **model_kwargs)
+                                disable_kv_cache, eval_by_score, **model_kwargs)
