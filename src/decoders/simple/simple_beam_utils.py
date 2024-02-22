@@ -195,6 +195,7 @@ def separate_model_states(
         batch_size: int,
         is_encoder_decoder: bool = False,
         disable_kv_cache: bool = False,
+        new_method=False,
         **model_kwargs,
 ) -> List[Dict[str, Any]]:
     """  Separate the batch of encoder states into a list of individual states. """
@@ -215,8 +216,11 @@ def separate_model_states(
             model_kwargs_l[i]["encoder_outputs"] = _separate_dict(model_kwargs["encoder_outputs"], i)
         if model_kwargs.get("past_key_values") is not None and not disable_kv_cache:
             for i in range(batch_size):
-                model_kwargs_l[i]["past_key_values"] = tuple(
-                    [tuple([a[i] for a in b]) for b in model_kwargs["past_key_values"]])
+                if new_method:
+                    pass #recursive_replace_tensors(model_kwargs_l[i]["past_key_values"], i)
+                else:
+                    model_kwargs_l[i]["past_key_values"] = tuple(
+                        [tuple([a[i] for a in b]) for b in model_kwargs["past_key_values"]])
     return model_kwargs_l
 
 

@@ -40,6 +40,9 @@ class SimpleSBSLogitProcessor(LogitsProcessor):
 
 
 class StochasticBeamSearchDecoder(BeamSearchDecoder):
+    
+    def __repr__(self):
+        return f"simple.{self.__class__.__name__}()"
 
     def __call__(self,
                  model: Union["PreTrainedModel", "GenerationMixin"],
@@ -49,6 +52,7 @@ class StochasticBeamSearchDecoder(BeamSearchDecoder):
                  keep_k_always_alive: Optional[int] = False,
                  disable_kv_cache: Optional[bool] = False,
                  eval_by_score: Optional[bool] = True,
+                 encoder_input_ids: Optional[torch.LongTensor] = None,
                  **model_kwargs,
                  ):
         r"""
@@ -63,4 +67,5 @@ class StochasticBeamSearchDecoder(BeamSearchDecoder):
         else:
             logits_processor = LogitsProcessorList([SimpleSBSLogitProcessor()])
         return super().__call__(model, input_ids, logits_processor, stopping_criteria, keep_k_always_alive,
-                                disable_kv_cache, eval_by_score, **model_kwargs)
+                                disable_kv_cache, eval_by_score, encoder_input_ids,
+                                **model_kwargs)

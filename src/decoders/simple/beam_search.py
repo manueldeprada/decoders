@@ -27,6 +27,7 @@ class BeamSearchDecoder(GenerationStrategy):
                  keep_k_always_alive: Optional[int] = False,
                  disable_kv_cache: Optional[bool] = False,
                  eval_by_score: Optional[bool] = False,
+                 encoder_input_ids: Optional[torch.LongTensor] = None,
                  **model_kwargs,
                  ):
         r"""
@@ -60,20 +61,35 @@ class BeamSearchDecoder(GenerationStrategy):
 
         batch_size, _ = input_ids.shape
         num_beams = self.config.num_beams
-        vocab_size = model.config.vocab_size
+        vocab_size = model.config.vocab_size if "vocab_size" in model.config.__dict__ else model.config.decoder.vocab_size
 
         # 0. Initialize beam searches, one for each sequence in the batch
         searches = [SimpleBeamSearch(num_beams, model.config.eos_token_id, eval_by_score) for _ in range(batch_size)]
 
         # 1. Generate initial hypotheses
         model_inputs = model.prepare_inputs_for_generation(input_ids, **model_kwargs)
+        if encoder_input_ids is not None:
+            model_inputs["input_ids"] = encoder_input_ids
         outputs = model(**model_inputs, return_dict=True)
         model_kwargs = model._update_model_kwargs_for_generation(outputs, model_kwargs,
                                                                  is_encoder_decoder=model.config.is_encoder_decoder)
         model_states = separate_model_states(batch_size, model.config.is_encoder_decoder, disable_kv_cache, **model_kwargs)
 
-        logits = outputs.logits[:, -1, :].log_softmax(dim=-1)
-        scores = logits_processor(input_ids, logits, nodes=None)
+        logits = outputs.logits[:, -1, :]
+        
+        if self.__class__.__name__ == "StochasticBeamSearchDecoder":
+            if len(logits_processor) > 1:
+                prev_logit_processors = logits_processor[:-1]
+                sbs_processor = logits_processor[-1]                    
+                logits = LogitsProcessorList(prev_logit_processors)(input_ids, logits, nodes=None).log_softmax(dim=-1)
+                scores = sbs_processor(input_ids, logits, nodes=None)
+            else:
+                logits = logits.log_softmax(dim=-1)
+                scores = logits_processor(input_ids, logits, nodes=None)
+        else:
+            logits = logits.log_softmax(dim=-1)
+            scores = logits_processor(input_ids, logits, nodes=None)
+                    
         scores, next_candidates = torch.topk(scores, min(num_beams, vocab_size))  # (batch_size, num_beams)
         log_probs = torch.gather(logits, -1, next_candidates)  # order by scores, store true log probs
 
@@ -98,10 +114,23 @@ class BeamSearchDecoder(GenerationStrategy):
             input_ids = torch.stack(input_ids, dim=0)
             model_args = collate_model_states([node.model_state for node in nodes], disable_kv_cache=disable_kv_cache)
             model_inputs = model.prepare_inputs_for_generation(input_ids, **model_args)
+            if encoder_input_ids is not None:
+                model_inputs["input_ids"] = encoder_input_ids
             outputs = model(**model_inputs, return_dict=True)
 
-            logits = outputs.logits[:, -1, :].log_softmax(dim=-1)
-            scores = logits_processor(input_ids, logits, nodes=nodes)
+            logits = outputs.logits[:, -1, :]
+            if self.__class__.__name__ == "StochasticBeamSearchDecoder":
+                if len(logits_processor) > 1:
+                    prev_logit_processors = logits_processor[:-1]
+                    sbs_processor = logits_processor[-1]                    
+                    logits = LogitsProcessorList(prev_logit_processors)(input_ids, logits, nodes=nodes).log_softmax(dim=-1)
+                    scores = sbs_processor(input_ids, logits, nodes=nodes)
+                else:
+                    logits = logits.log_softmax(dim=-1)
+                    scores = logits_processor(input_ids, logits, nodes=nodes)
+            else:
+                logits = logits.log_softmax(dim=-1)
+                scores = logits_processor(input_ids, logits, nodes=nodes)
             scores, next_candidates = torch.topk(scores, min(num_beams, vocab_size))  # (batch_size, num_beams)
             log_probs = torch.gather(logits, -1, next_candidates)  # order by scores, store true log probs
 
