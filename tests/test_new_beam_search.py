@@ -81,8 +81,41 @@ def test_en_pt_model():
     print(result.sequences)
     print(result.sequences_scores)
 
+def test_mixtral():
+    from transformers import MixtralForCausalLM
+    
+    dummy_input = torch.LongTensor([[0, 0, 0, 0, 0, 0, 1, 2, 3], 
+                                    [1, 1, 2, 3, 4, 5, 6, 7, 8],
+                                    [0, 0, 0, 0, 0, 0, 1, 2, 3],])
+                                    
+    attention_mask = dummy_input.ne(0).to(torch.long)
+
+    model = MixtralForCausalLM.from_pretrained("hf-internal-testing/Mixtral-tiny", torch_dtype=torch.bfloat16, low_cpu_mem_usage=True)
+    
+    inject_supervitamined_decoders(model)
+
+    from decoders.simple.beam_search import BeamSearchDecoder
+    result = model.generate(
+        dummy_input,
+        attention_mask=attention_mask,
+        generation_strategy=BeamSearchDecoder(),
+        # num_beams=100,
+        # num_return_sequences=100,
+        max_length=100,
+    )
+    print(result.sequences)
+    print(result.sequences_scores)
 
 if __name__ == '__main__':
-    from arsenal import testing_framework
+    import sys
 
-    testing_framework(globals())
+    def debugger_is_active() -> bool:
+        """Return if the debugger is currently active"""
+        return hasattr(sys, 'gettrace') and sys.gettrace() is not None
+
+    if debugger_is_active():
+        # test_binary_transformer()
+        test_mixtral()
+    else:
+        from arsenal import testing_framework
+        testing_framework(globals())

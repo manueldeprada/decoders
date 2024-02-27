@@ -24,7 +24,7 @@ def gumbel_log_survival(x):
         torch.log(-torch.expm1(-torch.exp(-x)))  # Hope for the best
     )
 
-GUMBEL_SENSITIVITY = float(os.environ.get('GUMBEL_SENSITIVITY', 5e-2))
+GUMBEL_SENSITIVITY = float(os.environ.get('GUMBEL_SENSITIVITY', 1e-3))
 if os.environ.get('GUMBEL_SENSITIVITY'):
     print(f"Gumbel sensitivity set to {GUMBEL_SENSITIVITY :.2e}")
 

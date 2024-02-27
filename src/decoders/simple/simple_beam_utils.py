@@ -188,6 +188,7 @@ def update_model_kv_cache(model_state, index, model_kwargs, disable_kv_cache=Fal
             [tuple([a[index] for a in b]) for b in model_kwargs["past_key_values"]])
     else:
         new_dict.pop("past_key_values", None)
+    new_dict["attention_mask"] = model_kwargs["attention_mask"][index].unsqueeze(0)
     return new_dict
 
 
@@ -214,6 +215,14 @@ def separate_model_states(
             raise ValueError("If `is_encoder_decoder` is True, make sure that `encoder_outputs` is defined.")
         for i in range(batch_size):
             model_kwargs_l[i]["encoder_outputs"] = _separate_dict(model_kwargs["encoder_outputs"], i)
+        if model_kwargs.get("past_key_values") is not None and not disable_kv_cache:
+            for i in range(batch_size):
+                if new_method:
+                    pass #recursive_replace_tensors(model_kwargs_l[i]["past_key_values"], i)
+                else:
+                    model_kwargs_l[i]["past_key_values"] = tuple(
+                        [tuple([a[i] for a in b]) for b in model_kwargs["past_key_values"]])
+    else:
         if model_kwargs.get("past_key_values") is not None and not disable_kv_cache:
             for i in range(batch_size):
                 if new_method:

@@ -23,6 +23,7 @@ class SamplingDecoder(GenerationStrategy):
                  logits_processor: Optional[LogitsProcessorList] = None,
                  logits_warper: Optional[LogitsProcessorList] = None,
                  stopping_criteria: Optional[StoppingCriteriaList] = None,
+                 pad_token_id: Optional[int] = None,
                  quiet: Optional[bool] = True,
                  **model_kwargs,
                  ):
@@ -70,6 +71,8 @@ class SamplingDecoder(GenerationStrategy):
         # keep track of which sequences are already finished
         sequences_logscores = torch.zeros(input_ids.shape[0], device=input_ids.device)
         finished = torch.zeros(input_ids.shape[0], device=input_ids.device, dtype=torch.bool)
+        
+        pad_token_id = pad_token_id if pad_token_id is not None else model.config.pad_token_id
 
         if not quiet:
             print(f"Running simple ancestral sampling. Batch Size: {input_ids.shape[0]}, "
@@ -97,7 +100,7 @@ class SamplingDecoder(GenerationStrategy):
 
             # finished sentences should have their next token be a padding token
             if model.config.eos_token_id is not None:
-                next_tokens = next_tokens * ~finished + model.config.pad_token_id * finished
+                next_tokens = next_tokens * ~finished + pad_token_id * finished
 
             finished = finished | (next_tokens == model.config.eos_token_id)
 

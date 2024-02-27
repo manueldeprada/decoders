@@ -28,6 +28,7 @@ class BeamSearchDecoder(GenerationStrategy):
                  disable_kv_cache: Optional[bool] = False,
                  eval_by_score: Optional[bool] = False,
                  encoder_input_ids: Optional[torch.LongTensor] = None,
+                 pad_token_id: Optional[int] = None,
                  **model_kwargs,
                  ):
         r"""
@@ -62,7 +63,8 @@ class BeamSearchDecoder(GenerationStrategy):
         batch_size, _ = input_ids.shape
         num_beams = self.config.num_beams
         vocab_size = model.config.vocab_size if "vocab_size" in model.config.__dict__ else model.config.decoder.vocab_size
-
+        pad_token_id = pad_token_id if pad_token_id is not None else pad_token_id
+        
         # 0. Initialize beam searches, one for each sequence in the batch
         searches = [SimpleBeamSearch(num_beams, model.config.eos_token_id, eval_by_score) for _ in range(batch_size)]
 
@@ -110,13 +112,17 @@ class BeamSearchDecoder(GenerationStrategy):
                 break  # All beams ended in EOS
 
             # 2.2 Expand nodes, get top `num_beams` candidates
-            input_ids = pad_tensors([node.sequence for node in nodes], model.config.pad_token_id)
+            input_ids = pad_tensors([node.sequence for node in nodes], pad_token_id)
             input_ids = torch.stack(input_ids, dim=0)
             model_args = collate_model_states([node.model_state for node in nodes], disable_kv_cache=disable_kv_cache)
             model_inputs = model.prepare_inputs_for_generation(input_ids, **model_args)
             if encoder_input_ids is not None:
                 model_inputs["input_ids"] = encoder_input_ids
             outputs = model(**model_inputs, return_dict=True)
+            
+            model_args = model._update_model_kwargs_for_generation(outputs, model_args,
+                                                                 is_encoder_decoder=model.config.is_encoder_decoder)
+            #the call to update_model_kv_cache must update attention masks as in the prvious line
 
             logits = outputs.logits[:, -1, :]
             if self.__class__.__name__ == "StochasticBeamSearchDecoder":
@@ -136,7 +142,7 @@ class BeamSearchDecoder(GenerationStrategy):
 
             # 2.3 Push new candidates to the beam searches
             for n_idx, node in enumerate(nodes):
-                model_state = update_model_kv_cache(node.model_state, n_idx, outputs, disable_kv_cache)
+                model_state = update_model_kv_cache(node.model_state, n_idx, model_args, disable_kv_cache)
                 for j in range(min(num_beams, vocab_size)):
                     next_token = next_candidates[n_idx, j]
                     beam_log_p = node.log_prob + log_probs[n_idx, j]
@@ -167,7 +173,7 @@ class BeamSearchDecoder(GenerationStrategy):
                 best_log_probs.append(node.log_prob.cpu().item())
                 last_scores.append(node.last_score.cpu().item())
 
-        best_sents = torch.stack(pad_tensors(best_sents, model.config.pad_token_id), dim=0)
+        best_sents = torch.stack(pad_tensors(best_sents, pad_token_id), dim=0)
         best_log_probs = torch.tensor(best_log_probs)
         last_scores = torch.tensor(last_scores)
         return BeamSearchDecoderOnlyOutput(
