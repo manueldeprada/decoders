@@ -26,7 +26,7 @@ from .sbs_helpers.logits_process import LogitsProcessorList, LogitsProcessor
 from transformers.generation.stopping_criteria import StoppingCriteriaList, validate_stopping_criteria
 from .beam_constrained_decoder import ConstrainedDecoder
 from .contrastive_decoder import ContrastiveDecoder
-from .utils import GenerationStrategy, BeamSearchDecoderOnlyOutput, BeamSearchEncoderDecoderOutput, \
+from .utils import GenerationStrategy, GenerateBeamDecoderOnlyOutput, GenerateBeamEncoderDecoderOutput, \
     BeamSearchOutput
 from .beam_utils import BeamSearchScorer
 
@@ -241,6 +241,7 @@ class OldStochasticBeamSearchDecoder(GenerationStrategy):
         >>> tokenizer.batch_decode(outputs, skip_special_tokens=True)
         ['Wie alt bist du?']
         ```"""
+        raise NotImplementedError("This method has not been updated to the new generation API")
         if self.config.num_beams <= 1:
             raise ValueError(
                 f"{self.__class__.__name__} cannot be used with `num_beams == 1`. Please use `num_beams > 1`."
@@ -469,7 +470,7 @@ class OldStochasticBeamSearchDecoder(GenerationStrategy):
                 sequence_outputs["sequence_scores"] = None
 
             if model.config.is_encoder_decoder:
-                return BeamSearchEncoderDecoderOutput(
+                return GenerateBeamEncoderDecoderOutput(
                     sequences=sequence_outputs["sequences"],
                     sequences_scores=sequence_outputs["sequence_scores"],
                     scores=scores,
@@ -482,7 +483,7 @@ class OldStochasticBeamSearchDecoder(GenerationStrategy):
                     beam_gumbels=sequence_outputs["beam_gumbels"],
                 )
             else:
-                return BeamSearchDecoderOnlyOutput(
+                return GenerateBeamDecoderOnlyOutput(
                     sequences=sequence_outputs["sequences"],
                     sequences_scores=sequence_outputs["sequence_scores"],
                     scores=scores,

@@ -14,6 +14,7 @@ class BinaryCodeTransformerConfig(PretrainedConfig):
         self.max_new_tokens = max_new_tokens
         self.do_sample = True
         self.num_beams = 1
+        self.num_hidden_layers = None
 
 
 # Helper functions
@@ -136,7 +137,7 @@ class BinaryCodeTransformer(PreTrainedModel):
             output = continuations_probs.view(batch_size, 2).unsqueeze(1)
             output = torch.cat([output, torch.zeros(batch_size, 1, 1)], dim=-1)
         # Placeholder for past_key_values, attentions, hidden_states
-        past_key_values = () if past_key_values is None else past_key_values
+        past_key_values = False if past_key_values is None else past_key_values
         attentions = () if output_attentions else None
         hidden_states = () if output_hidden_states else None
 

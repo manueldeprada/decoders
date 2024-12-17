@@ -8,7 +8,7 @@ import torch
 from torch import nn
 import torch.distributed as dist
 
-from .utils import BeamSearchDecoderOnlyOutput, BeamSearchEncoderDecoderOutput, BeamSampleOutput
+from .utils import GenerateBeamDecoderOnlyOutput, GenerateBeamEncoderDecoderOutput, BeamSampleOutput
 from .beam_utils import BeamHypotheses, BeamScorer
 from .utils import GenerationStrategy
 
@@ -178,6 +178,7 @@ class ConstrainedDecoder(GenerationStrategy):
         >>> tokenizer.batch_decode(outputs, skip_special_tokens=True)
         ['Wie alt sind Sie?']
         ```"""
+        raise NotImplementedError("ConstrainedDecoder has not been updated to the new generation API.")
 
         if self.check_config:
             if self.config.num_return_sequences > self.config.num_beams:
@@ -435,7 +436,7 @@ class ConstrainedDecoder(GenerationStrategy):
             if not output_scores:
                 sequence_outputs["sequence_scores"] = None
             if model.config.is_encoder_decoder:
-                return BeamSearchEncoderDecoderOutput(
+                return GenerateBeamEncoderDecoderOutput(
                     sequences=sequence_outputs["sequences"],
                     sequences_scores=sequence_outputs["sequence_scores"],
                     scores=scores,
@@ -447,7 +448,7 @@ class ConstrainedDecoder(GenerationStrategy):
                     decoder_hidden_states=decoder_hidden_states,
                 )
             else:
-                return BeamSearchDecoderOnlyOutput(
+                return GenerateBeamDecoderOnlyOutput(
                     sequences=sequence_outputs["sequences"],
                     sequences_scores=sequence_outputs["sequence_scores"],
                     scores=scores,

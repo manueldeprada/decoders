@@ -133,7 +133,7 @@ class BeamSearchScorer(BeamScorer):
             beam search algorithm).
         num_beam_hyps_to_keep (`int`, *optional*, defaults to 1):
             The number of beam hypotheses that shall be returned upon calling
-            [`~transformer.BeamSearchScorer.finalize`].
+            [`~transformers.BeamSearchScorer.finalize`].
         num_beam_groups (`int`, *optional*, defaults to 1):
             Number of groups to divide `num_beams` into in order to ensure diversity among different groups of beams.
             See [this paper](https://arxiv.org/pdf/1610.02424.pdf) for more details.
@@ -200,14 +200,16 @@ class BeamSearchScorer(BeamScorer):
         next_scores: torch.FloatTensor,
         next_tokens: torch.LongTensor,
         next_indices: torch.LongTensor,
-        pad_token_id: Optional[int] = None,
-        eos_token_id: Optional[Union[int, List[int]]] = None,
+        pad_token_id: Optional[Union[int, torch.Tensor]] = None,
+        eos_token_id: Optional[Union[int, List[int], torch.Tensor]] = None,
         beam_indices: Optional[torch.LongTensor] = None,
         group_index: Optional[int] = 0,
+        decoder_prompt_len: Optional[int] = 0,
         beam_scores: Optional[torch.FloatTensor] = None,
         next_true_log_probs: Optional[torch.FloatTensor] = None,
     ) -> Dict[str, torch.Tensor]:
-        cur_len = input_ids.shape[-1] + 1  # add up to the length which the next_scores is calculated on
+        # add up to the length which the next_scores is calculated on (including decoder prompt)
+        cur_len = input_ids.shape[-1] + 1
         batch_size = len(self._beam_hyps) // self.num_beam_groups
 
         if not (batch_size == (input_ids.shape[0] // self.group_size)):
@@ -231,8 +233,10 @@ class BeamSearchScorer(BeamScorer):
         else:
             next_beam_gumbels = None
 
-        if isinstance(eos_token_id, int):
-            eos_token_id = [eos_token_id]
+        if eos_token_id is not None and not isinstance(eos_token_id, torch.Tensor):
+            if isinstance(eos_token_id, int):
+                eos_token_id = [eos_token_id]
+            eos_token_id = torch.tensor(eos_token_id)
 
         for batch_idx in range(batch_size):
             batch_group_idx = batch_idx * self.num_beam_groups + group_index
@@ -273,6 +277,7 @@ class BeamSearchScorer(BeamScorer):
                         input_ids[batch_beam_idx].clone(),
                         next_score.item(),
                         beam_indices=beam_index,
+                        generated_len=cur_len - decoder_prompt_len,
                         beam_gumbel=beam_gumbel,
                     )
                 else:
@@ -285,7 +290,7 @@ class BeamSearchScorer(BeamScorer):
                     beam_idx += 1
 
                 # once the beam for next step is full, don't add more tokens to it.
-                if beam_idx >= (self.group_size):# - len(self._beam_hyps[batch_group_idx])):
+                if beam_idx == self.group_size:
                     break
 
             if beam_idx < self.group_size:
@@ -296,7 +301,7 @@ class BeamSearchScorer(BeamScorer):
 
             # Check if we are done so that we can save a pad step if all(done)
             self._done[batch_group_idx] = self._done[batch_group_idx] or self._beam_hyps[batch_group_idx].is_done(
-                next_scores[batch_idx].max().item(), cur_len
+                next_scores[batch_idx].max().item(), cur_len, decoder_prompt_len
             )
 
         return UserDict(
@@ -304,7 +309,6 @@ class BeamSearchScorer(BeamScorer):
                 "next_beam_scores": next_beam_scores.view(-1),
                 "next_beam_tokens": next_beam_tokens.view(-1),
                 "next_beam_indices": next_beam_indices.view(-1),
-                "next_beam_gumbels": next_beam_gumbels.view(-1) if next_beam_gumbels is not None else None,
             }
         )
 
@@ -315,15 +319,18 @@ class BeamSearchScorer(BeamScorer):
         final_beam_tokens: torch.LongTensor,
         final_beam_indices: torch.LongTensor,
         max_length: int,
-        pad_token_id: Optional[int] = None,
-        eos_token_id: Optional[Union[int, List[int]]] = None,
+        pad_token_id: Optional[Union[int, torch.Tensor]] = None,
+        eos_token_id: Optional[Union[int, List[int], torch.Tensor]] = None,
         beam_indices: Optional[torch.LongTensor] = None,
+        decoder_prompt_len: Optional[int] = 0,
         beam_gumbels: Optional[torch.FloatTensor] = None,
     ) -> Tuple[torch.LongTensor]:
         batch_size = len(self._beam_hyps) // self.num_beam_groups
 
-        if isinstance(eos_token_id, int):
-            eos_token_id = [eos_token_id]
+        if eos_token_id is not None and not isinstance(eos_token_id, torch.Tensor):
+            if isinstance(eos_token_id, int):
+                eos_token_id = [eos_token_id]
+            eos_token_id = torch.tensor(eos_token_id)
 
         # finalize all open beam hypotheses and add to generated hypotheses
         for batch_group_idx, beam_hyp in enumerate(self._beam_hyps):
@@ -338,7 +345,8 @@ class BeamSearchScorer(BeamScorer):
                 final_tokens = input_ids[batch_beam_idx]
                 beam_index = beam_indices[batch_beam_idx] if beam_indices is not None else None
                 beam_gumbel = beam_gumbels[batch_beam_idx] if beam_gumbels is not None else None
-                beam_hyp.add(final_tokens, final_score, beam_indices=beam_index, beam_gumbel=beam_gumbel)
+                generated_len = final_tokens.shape[-1] - decoder_prompt_len
+                beam_hyp.add(final_tokens, final_score, beam_indices=beam_index, beam_gumbel=beam_gumbel, generated_len=generated_len)
 
         # select the best hypotheses
         sent_lengths = input_ids.new(batch_size * self.num_beam_hyps_to_keep)
@@ -440,12 +448,23 @@ class BeamHypotheses:
         """
         return len(self.beams)
 
-    def add(self, hyp: torch.LongTensor, sum_logprobs: float, beam_indices: Optional[torch.LongTensor] = None,
-            beam_gumbel: Optional[torch.LongTensor] = None):
+    def add(
+        self,
+        hyp: torch.LongTensor,
+        sum_logprobs: float,
+        beam_indices: Optional[torch.LongTensor] = None,
+        generated_len: Optional[int] = None,
+        beam_gumbel: Optional[torch.LongTensor] = None,
+    ):
         """
         Add a new hypothesis to the list.
         """
-        score = sum_logprobs / (hyp.shape[-1] ** self.length_penalty)
+        if generated_len is not None:
+            score = sum_logprobs / (generated_len**self.length_penalty)
+        # This 'else' case exists for retrocompatibility
+        else:
+            score = sum_logprobs / (hyp.shape[-1] ** self.length_penalty)
+
         if len(self) < self.num_beams or score > self.worst_score:
             self.beams.append((score, hyp, beam_indices, beam_gumbel))
             if len(self) > self.num_beams:
@@ -456,7 +475,7 @@ class BeamHypotheses:
             else:
                 self.worst_score = min(score, self.worst_score)
 
-    def is_done(self, best_sum_logprobs: float, cur_len: int) -> bool:
+    def is_done(self, best_sum_logprobs: float, cur_len: int, decoder_prompt_len: Optional[int] = 0) -> bool:
         """
         If there are enough hypotheses and that none of the hypotheses being generated can become better than the worst
         one in the heap, then we are done with this sentence.
@@ -472,7 +491,7 @@ class BeamHypotheses:
         #  when `length_penalty` is positive. See the discussion below for more details.
         # https://github.com/huggingface/transformers/pull/20901#issuecomment-1369845565
         elif self.early_stopping is False:
-            highest_attainable_score = best_sum_logprobs / cur_len**self.length_penalty
+            highest_attainable_score = best_sum_logprobs / (cur_len - decoder_prompt_len) ** self.length_penalty
             ret = self.worst_score >= highest_attainable_score
             return ret
         # `"never"`: compute the best possible score, depending on the signal of `length_penalty`
@@ -481,9 +500,13 @@ class BeamHypotheses:
             # abs(`highest_attainable_score`) is obtained -> `highest_attainable_score` is negative, hence we obtain
             # its max this way
             if self.length_penalty > 0.0:
-                highest_attainable_score = best_sum_logprobs / self.max_length**self.length_penalty
+                if self.max_length <= decoder_prompt_len:
+                    raise ValueError("max_length is not larger than decoder prompt length")
+                highest_attainable_score = (
+                    best_sum_logprobs / (self.max_length - decoder_prompt_len) ** self.length_penalty
+                )
             # the opposite logic applies here (max `highest_attainable_score` from `cur_len`)
             else:
-                highest_attainable_score = best_sum_logprobs / cur_len**self.length_penalty
+                highest_attainable_score = best_sum_logprobs / (cur_len - decoder_prompt_len) ** self.length_penalty
             ret = self.worst_score >= highest_attainable_score
             return ret

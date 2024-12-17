@@ -2,7 +2,7 @@ from typing import Optional, Union, TYPE_CHECKING
 import torch
 from transformers import GenerationConfig, StoppingCriteriaList, LogitsProcessorList
 
-from ..strategies.utils import GenerationStrategy, SampleEncoderDecoderOutput
+from ..strategies.utils import GenerationStrategy, GenerateEncoderDecoderOutput
 
 if TYPE_CHECKING:
     from transformers.modeling_utils import PreTrainedModel, GenerationMixin
@@ -21,10 +21,11 @@ class SamplingDecoder(GenerationStrategy):
                  model: Union["PreTrainedModel", "GenerationMixin"],
                  input_ids: torch.LongTensor,
                  logits_processor: Optional[LogitsProcessorList] = None,
-                 logits_warper: Optional[LogitsProcessorList] = None,
                  stopping_criteria: Optional[StoppingCriteriaList] = None,
-                 pad_token_id: Optional[int] = None,
+                 synced_gpus: bool = False,
+                 streamer: Optional["BaseStreamer"] = None,
                  quiet: Optional[bool] = True,
+                 gen_args: dict = None,
                  **model_kwargs,
                  ):
         r"""
@@ -60,10 +61,11 @@ class SamplingDecoder(GenerationStrategy):
             **model_kwargs,
         )
         # init values
+        pad_token_id = self.config._pad_token_tensor
         logits_processor = logits_processor if logits_processor is not None else LogitsProcessorList()
         stopping_criteria = stopping_criteria if stopping_criteria is not None else StoppingCriteriaList()
-        logits_warper = logits_warper if logits_warper is not None else model._get_logits_warper(self.config)
-        eos_token_id_tensor = torch.tensor([model.config.eos_token_id]).to(input_ids.device)
+        has_eos_stopping_criteria = any(hasattr(criteria, "eos_token_id") for criteria in stopping_criteria)
+        do_sample = self.config.do_sample
 
         # init attention / hidden states / scores tuples
         scores = () if self.config.output_scores else None
@@ -72,12 +74,12 @@ class SamplingDecoder(GenerationStrategy):
         sequences_logscores = torch.zeros(input_ids.shape[0], device=input_ids.device)
         finished = torch.zeros(input_ids.shape[0], device=input_ids.device, dtype=torch.bool)
         
-        pad_token_id = pad_token_id if pad_token_id is not None else model.config.pad_token_id
+        model_kwargs = model._get_initial_cache_position(input_ids, model_kwargs)
+        method = "ancestral_sampling" if do_sample else "greedy_search"
 
         if not quiet:
-            print(f"Running simple ancestral sampling. Batch Size: {input_ids.shape[0]}, "
-                  f"logit_processor: {logits_processor}, stopping_criteria: {stopping_criteria}, "
-                  f"logits_warper: {logits_warper}")
+            print(f"Running simple {method}. Batch Size: {input_ids.shape[0]}, "
+                  f"logit_processor: {logits_processor}, stopping_criteria: {stopping_criteria}")
         while True:
             model_inputs = model.prepare_inputs_for_generation(input_ids, **model_kwargs)
             outputs = model(
@@ -87,22 +89,24 @@ class SamplingDecoder(GenerationStrategy):
             next_token_logits = outputs.logits[:, -1, :]
 
             next_token_scores = logits_processor(input_ids, next_token_logits)
-            next_token_scores = logits_warper(input_ids, next_token_scores)
 
             if scores is not None:
                 scores += (next_token_scores,)
             probs = next_token_scores.softmax(dim=-1)
-            next_tokens = torch.multinomial(probs, num_samples=1).squeeze(1) #todo: test and replace this with gumbel sampling
+            if do_sample:
+                next_tokens = torch.multinomial(probs, num_samples=1).squeeze(1) #todo: test and replace this with gumbel sampling
+            else:
+                next_tokens = torch.argmax(probs, dim=-1)
             next_token_logprobs = next_token_scores.log_softmax(dim=-1).gather(dim=-1, index=next_tokens.unsqueeze(-1)).squeeze(-1)
             # next_token_logprobs = torch.where(~finished, next_token_logprobs, torch.zeros_like(next_token_logprobs))
             sequences_logscores += next_token_logprobs * (~finished).float()
 
 
             # finished sentences should have their next token be a padding token
-            if model.config.eos_token_id is not None:
+            if has_eos_stopping_criteria:
                 next_tokens = next_tokens * ~finished + pad_token_id * finished
 
-            finished = finished | (next_tokens == model.config.eos_token_id)
+            finished = finished | stopping_criteria(input_ids, scores)
 
             # update generated ids, model inputs, and length for next step
             input_ids = torch.cat([input_ids, next_tokens[:, None]], dim=-1)
@@ -110,21 +114,11 @@ class SamplingDecoder(GenerationStrategy):
                 outputs, model_kwargs, is_encoder_decoder=model.config.is_encoder_decoder
             )
 
-            # if eos_token was found in one sentence, set sentence to finished
-            if eos_token_id_tensor is not None:
-                # unfinished_sequences = unfinished_sequences.mul(
-                #     next_tokens.tile(eos_token_id_tensor.shape[0], 1).ne(eos_token_id_tensor.unsqueeze(1)).prod(dim=0)
-                # )
-
-                # stop when each sentence is finished
-                if (~finished).max() == 0:
-                    break
-
-            # stop if we exceed the maximum length
-            if stopping_criteria(input_ids, scores):
+            # stop when each sentence is finished
+            if (~finished).max() == 0:
                 break
 
-        return SampleEncoderDecoderOutput(
+        return GenerateEncoderDecoderOutput(
                 sequences=input_ids,
                 scores=scores,
                 sequences_scores=sequences_logscores,

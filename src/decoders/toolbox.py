@@ -1,4 +1,6 @@
 import torch
+from transformers.generation.configuration_utils import GenerationConfig
+
 
 def _prepare_decoder_input(model, sequences):
     batch_size = sequences.shape[0]
@@ -28,7 +30,7 @@ def compute_true_logprobs(model, sequences, encoder_input=None):
             encoder_input.input_ids, model.config.bos_token_id, {'attention_mask': encoder_input.attention_mask},
         )
         model_kwargs = model._prepare_encoder_decoder_kwargs_for_generation(
-            encoder_input, model_kwargs, model_input_name
+            encoder_input, model_kwargs, model_input_name, GenerationConfig(),
         )
         _, model_kwargs = model._expand_inputs_for_generation(sequences.shape[0] // encoder_input.shape[0],
                                                               is_encoder_decoder=True, **model_kwargs)

@@ -71,15 +71,5 @@ def test_small_prob_transformer():
 
 
 if __name__ == '__main__':
-    import sys
-
-    def debugger_is_active() -> bool:
-        """Return if the debugger is currently active"""
-        return hasattr(sys, 'gettrace') and sys.gettrace() is not None
-
-    if debugger_is_active():
-        # test_binary_transformer()
-        test_small_prob_transformer()
-    else:
-        from arsenal import testing_framework
-        testing_framework(globals())
+    from arsenal import testing_framework
+    testing_framework(globals())

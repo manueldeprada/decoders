@@ -49,11 +49,13 @@ class StochasticBeamSearchDecoder(BeamSearchDecoder):
                  input_ids: torch.LongTensor,
                  logits_processor: Optional[LogitsProcessorList] = None,
                  stopping_criteria: Optional[StoppingCriteriaList] = None,
+                 synced_gpus: bool = False,
+                 streamer: Optional["BaseStreamer"] = None,
                  keep_k_always_alive: Optional[int] = False,
                  disable_kv_cache: Optional[bool] = False,
                  eval_by_score: Optional[bool] = True,
                  encoder_input_ids: Optional[torch.LongTensor] = None,
-                 pad_token_id: Optional[int] = None,
+                 gen_args: dict = None,
                  **model_kwargs,
                  ):
         r"""
@@ -67,6 +69,7 @@ class StochasticBeamSearchDecoder(BeamSearchDecoder):
                 logits_processor.append(SimpleSBSLogitProcessor())
         else:
             logits_processor = LogitsProcessorList([SimpleSBSLogitProcessor()])
-        return super().__call__(model, input_ids, logits_processor, stopping_criteria, keep_k_always_alive,
-                                disable_kv_cache, eval_by_score, encoder_input_ids, pad_token_id,
+        return super().__call__(model, input_ids, logits_processor, stopping_criteria, synced_gpus, streamer,
+                                keep_k_always_alive,
+                                disable_kv_cache, eval_by_score, encoder_input_ids, gen_args,
                                 **model_kwargs)

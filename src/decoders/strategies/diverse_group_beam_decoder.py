@@ -8,7 +8,7 @@ import torch.distributed as dist
 from .beam_utils import BeamScorer, BeamSearchScorer
 from .beam_constrained_decoder import ConstrainedDecoder
 from .contrastive_decoder import ContrastiveDecoder
-from .utils import GenerationStrategy, BeamSearchDecoderOnlyOutput, BeamSearchEncoderDecoderOutput
+from .utils import GenerationStrategy, GenerateBeamDecoderOnlyOutput, GenerateBeamEncoderDecoderOutput
 from transformers.generation.configuration_utils import GenerationConfig
 from transformers.generation.logits_process import LogitsProcessorList
 from transformers.generation.stopping_criteria import StoppingCriteriaList, validate_stopping_criteria
@@ -187,6 +187,7 @@ class DiverseGroupBeamDecoder(GenerationStrategy):
         >>> tokenizer.batch_decode(outputs, skip_special_tokens=True)
         ['Wie alt bist du?']
         ```"""
+        raise NotImplementedError("This method has not been updated to the latest generation API yet.")
         if self.check_config:
             if self.config.num_return_sequences > self.config.num_beams:
                 raise ValueError("`num_return_sequences` has to be smaller or equal to `num_beams`.")
@@ -456,7 +457,7 @@ class DiverseGroupBeamDecoder(GenerationStrategy):
                 sequence_outputs["sequence_scores"] = None
 
             if model.config.is_encoder_decoder:
-                return BeamSearchEncoderDecoderOutput(
+                return GenerateBeamEncoderDecoderOutput(
                     sequences=sequence_outputs["sequences"],
                     sequences_scores=sequence_outputs["sequence_scores"],
                     scores=scores,
@@ -468,7 +469,7 @@ class DiverseGroupBeamDecoder(GenerationStrategy):
                     decoder_hidden_states=decoder_hidden_states,
                 )
             else:
-                return BeamSearchDecoderOnlyOutput(
+                return GenerateBeamDecoderOnlyOutput(
                     sequences=sequence_outputs["sequences"],
                     sequences_scores=sequence_outputs["sequence_scores"],
                     scores=scores,

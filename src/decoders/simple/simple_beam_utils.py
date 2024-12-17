@@ -159,78 +159,79 @@ class BeamSearchNode(object):
 
 
 # In the following ugly code rests the decent speed of this beam search implementation.
-def collate_model_states(model_states, disable_kv_cache=False):
-    new_dict = model_states[0].copy()
-    for key in model_states[0]:
-        if model_states[0][key] is not None and isinstance(model_states[0][key], torch.Tensor):
-            new_dict[key] = torch.stack([model_states[i][key].squeeze() for i in range(len(model_states))], dim=0)
-    if model_states[0].get("encoder_outputs") is not None:
-        new_dict["encoder_outputs"] = collate_model_states(
-            [model_states[i]["encoder_outputs"] for i in range(len(model_states))])
-    if model_states[0].get("past_key_values") is not None and not disable_kv_cache:
-        tt = []
-        for i in range(len(model_states[0]["past_key_values"])):
-            list_t = []
-            for j in range(len(model_states[0]["past_key_values"][i])):
-                t = torch.stack([model_states[k]["past_key_values"][i][j] for k in range(len(model_states))], dim=0)
-                list_t.append(t)
-            tt.append(tuple(list_t))
-        new_dict["past_key_values"] = tuple(tt)
-    if disable_kv_cache:
-        new_dict.pop("past_key_values", None)
-    return new_dict
+# def collate_model_states(model_states, disable_kv_cache=False):
+#     new_dict = model_states[0].copy()
+#     for key in model_states[0]:
+#         if model_states[0][key] is not None and isinstance(model_states[0][key], torch.Tensor):
+#             new_dict[key] = torch.stack([model_states[i][key].squeeze() for i in range(len(model_states))], dim=0)
+#     if model_states[0].get("encoder_outputs") is not None:
+#         new_dict["encoder_outputs"] = collate_model_states(
+#             [model_states[i]["encoder_outputs"] for i in range(len(model_states))])
+#     if model_states[0].get("past_key_values") is not None and not disable_kv_cache:
+#         tt = []
+#         for i in range(len(model_states[0]["past_key_values"])):
+#             list_t = []
+#             for j in range(len(model_states[0]["past_key_values"][i])):
+#                 t = torch.stack([model_states[k]["past_key_values"][i][j] for k in range(len(model_states))], dim=0)
+#                 list_t.append(t)
+#             tt.append(tuple(list_t))
+#         new_dict["past_key_values"] = tuple(tt)
+#     if disable_kv_cache:
+#         new_dict.pop("past_key_values", None)
+#     return new_dict
 
 
-def update_model_kv_cache(model_state, index, model_kwargs, disable_kv_cache=False):
-    new_dict = model_state.copy()
-    if not disable_kv_cache:
-        new_dict["past_key_values"] = tuple(
-            [tuple([a[index] for a in b]) for b in model_kwargs["past_key_values"]])
-    else:
-        new_dict.pop("past_key_values", None)
-    new_dict["attention_mask"] = model_kwargs["attention_mask"][index].unsqueeze(0)
-    return new_dict
+# def update_model_kv_cache(model_state, index, model_kwargs, disable_kv_cache=False):
+#     new_dict = model_state.copy()
+#     if not disable_kv_cache:
+#         new_dict["past_key_values"] = tuple(
+#             [tuple([a[index] for a in b]) for b in model_kwargs["past_key_values"]])
+#     else:
+#         new_dict.pop("past_key_values", None)
+#     new_dict["attention_mask"] = model_kwargs["attention_mask"][index].unsqueeze(0)
+#     return new_dict
 
 
-def separate_model_states(
-        batch_size: int,
-        is_encoder_decoder: bool = False,
-        disable_kv_cache: bool = False,
-        new_method=False,
-        **model_kwargs,
-) -> List[Dict[str, Any]]:
-    """  Separate the batch of encoder states into a list of individual states. """
+# def separate_model_states(
+#         batch_size: int,
+#         is_encoder_decoder: bool = False,
+#         disable_kv_cache: bool = False,
+#         new_method=False,
+#         **model_kwargs,
+# ) -> List[Dict[str, Any]]:
+#     """  Separate the batch of encoder states into a list of individual states. """
 
-    def _separate_dict(dict_to_expand, i):
-        new_dict = dict_to_expand.copy()
-        for key in dict_to_expand:
-            if dict_to_expand[key] is not None and isinstance(dict_to_expand[key], torch.Tensor):
-                new_dict[key] = dict_to_expand[key][i].unsqueeze(0)
-        return new_dict
+#     def _separate_dict(dict_to_expand, i):
+#         new_dict = dict_to_expand.copy()
+#         for key in dict_to_expand:
+#             if dict_to_expand[key] is not None and isinstance(dict_to_expand[key], torch.Tensor) and len(
+#                     dict_to_expand[key].shape) > 1:
+#                 new_dict[key] = dict_to_expand[key][i].unsqueeze(0)
+#         return new_dict
 
-    model_kwargs_l = [_separate_dict(model_kwargs, i) for i in range(batch_size)]
+#     model_kwargs_l = [_separate_dict(model_kwargs, i) for i in range(batch_size)]
 
-    if is_encoder_decoder:
-        if model_kwargs.get("encoder_outputs") is None:
-            raise ValueError("If `is_encoder_decoder` is True, make sure that `encoder_outputs` is defined.")
-        for i in range(batch_size):
-            model_kwargs_l[i]["encoder_outputs"] = _separate_dict(model_kwargs["encoder_outputs"], i)
-        if model_kwargs.get("past_key_values") is not None and not disable_kv_cache:
-            for i in range(batch_size):
-                if new_method:
-                    pass #recursive_replace_tensors(model_kwargs_l[i]["past_key_values"], i)
-                else:
-                    model_kwargs_l[i]["past_key_values"] = tuple(
-                        [tuple([a[i] for a in b]) for b in model_kwargs["past_key_values"]])
-    else:
-        if model_kwargs.get("past_key_values") is not None and not disable_kv_cache:
-            for i in range(batch_size):
-                if new_method:
-                    pass #recursive_replace_tensors(model_kwargs_l[i]["past_key_values"], i)
-                else:
-                    model_kwargs_l[i]["past_key_values"] = tuple(
-                        [tuple([a[i] for a in b]) for b in model_kwargs["past_key_values"]])
-    return model_kwargs_l
+#     if is_encoder_decoder:
+#         if model_kwargs.get("encoder_outputs") is None:
+#             raise ValueError("If `is_encoder_decoder` is True, make sure that `encoder_outputs` is defined.")
+#         for i in range(batch_size):
+#             model_kwargs_l[i]["encoder_outputs"] = _separate_dict(model_kwargs["encoder_outputs"], i)
+#         if model_kwargs.get("past_key_values") is not None and not disable_kv_cache:
+#             for i in range(batch_size):
+#                 if new_method:
+#                     pass #recursive_replace_tensors(model_kwargs_l[i]["past_key_values"], i)
+#                 else:
+#                     model_kwargs_l[i]["past_key_values"] = tuple(
+#                         [tuple([a[i] for a in b]) for b in model_kwargs["past_key_values"]])
+#     else:
+#         if model_kwargs.get("past_key_values") is not None and not disable_kv_cache:
+#             for i in range(batch_size):
+#                 if new_method:
+#                     pass #recursive_replace_tensors(model_kwargs_l[i]["past_key_values"], i)
+#                 else:
+#                     model_kwargs_l[i]["past_key_values"] = tuple(
+#                         [tuple([a[i] for a in b]) for b in model_kwargs["past_key_values"]])
+#     return model_kwargs_l
 
 
 def pad_tensors(tensors, pad_token_id):

@@ -12,6 +12,7 @@ class FakeTransformerConfig(PretrainedConfig):
         self.max_new_tokens = 4
         self.do_sample = False
         self.num_beams = 1
+        self.num_hidden_layers = None
 
 
 class FakeTransformer(PreTrainedModel):
@@ -55,7 +56,7 @@ class FakeTransformer(PreTrainedModel):
             output = output[:, -1, :].unsqueeze(1)
 
         # Placeholder for past_key_values, attentions, hidden_states
-        past_key_values = () if past_key_values is None else past_key_values
+        past_key_values = False if past_key_values is None else past_key_values
         attentions = () if output_attentions else None
         hidden_states = () if output_hidden_states else None
 
